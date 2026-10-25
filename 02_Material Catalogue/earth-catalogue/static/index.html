@@ -1,0 +1,1727 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-100 text-slate-900">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Earth Materials Catalogue &amp; Paper Ingestion</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <style>
+    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+    .font-mono { font-family: 'Roboto Mono', monospace; }
+    .btn { border-radius: 0.375rem; transition: all 0.15s ease-in-out; }
+    .btn-primary { background:#0f172a; color:#fff; border:1px solid #0f172a; }
+    .btn-primary:hover { background:#1e293b; }
+    .btn-accent { background:#334155; color:#fff; border:1px solid #334155; }
+    .btn-accent:hover { background:#1e293b; }
+    .btn-secondary { background:#fff; color:#0f172a; border:1px solid #cbd5e1; }
+    .btn-secondary:hover { background:#f8fafc; border-color:#94a3b8; }
+    .nav-tab { border-radius: 0.375rem 0.375rem 0 0; transition: all 0.15s ease-in-out; }
+    .nav-tab.active { background:#fff; color:#0f172a; border-bottom:2px solid #0f172a; font-weight:600; }
+    ::-webkit-scrollbar { width:6px; height:6px; }
+    ::-webkit-scrollbar-track { background:#f1f5f9; }
+    ::-webkit-scrollbar-thumb { background:#cbd5e1; border-radius:3px; }
+    .drop-zone--over { border-color:#0f172a !important; background:#f1f5f9 !important; }
+    .badge { font-size:9px; font-weight:600; padding:1px 5px; border-radius:3px; border:1px solid; white-space:nowrap; }
+    .badge-rep   { background:#f1f5f9; color:#334155; border-color:#cbd5e1; }
+    .badge-calc  { background:#fef3c7; color:#92400e; border-color:#fcd34d; }
+    .badge-man   { background:#e0f2fe; color:#0369a1; border-color:#bae6fd; }
+    .badge-est   { background:#ede9fe; color:#5b21b6; border-color:#c4b5fd; }
+    .badge-warn  { background:#fef2f2; color:#991b1b; border-color:#fecaca; font-weight:700; }
+    .badge-ok    { background:#dcfce7; color:#15803d; border-color:#86efac; font-weight:700; }
+    .badge-pend  { background:#fef3c7; color:#b45309; border-color:#fde68a; }
+    .tag { font-size:10px; font-weight:600; padding:1px 7px; border-radius:999px; background:#e2e8f0; color:#0f172a; white-space:nowrap; }
+    .tag-tech { background:#0f172a; color:#fff; }
+    .tag-derived { background:#ecfccb; color:#3f6212; }
+    .cbar { display:flex; height:10px; border-radius:3px; overflow:hidden; background:#e2e8f0; }
+    .cbar > span { display:block; height:100%; }
+  </style>
+</head>
+<body class="h-full bg-slate-100 text-slate-800 flex flex-col overflow-hidden text-sm">
+
+  <header class="bg-white border-b border-slate-200 px-6 py-3.5 flex flex-wrap justify-between items-center gap-4 z-20 shadow-sm">
+    <div class="flex items-center gap-3">
+      <div class="bg-slate-900 text-white px-3 py-1.5 rounded-md font-bold text-xs tracking-wider uppercase">EARTH-CATALOGUE</div>
+      <div>
+        <h1 class="font-bold text-slate-900 text-base tracking-tight">Earth Building Materials Catalogue</h1>
+        <p class="text-xs text-slate-500 mt-0.5">Paper ingestion &rarr; composition, technique tags &amp; thermal properties &rarr; JSON for Grasshopper matching</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2 flex-wrap">
+      <span id="save-status" class="text-[11px] font-mono text-slate-400 mr-1" title="Catalogue is saved to the server's data folder">loading...</span>
+      <label class="flex items-center gap-1.5 text-[11px] text-slate-600 font-mono mr-1">
+        <input type="checkbox" id="export-verified-only" class="rounded"> verified only
+      </label>
+      <button onclick="exportJSON()" class="btn btn-primary px-3.5 py-1.5 text-xs font-semibold uppercase tracking-wider">Export JSON (Grasshopper)</button>
+      <button onclick="exportCSV()" class="btn btn-secondary px-3 py-1.5 text-xs font-semibold uppercase tracking-wider">CSV</button>
+      <button onclick="exportExcel()" class="btn btn-secondary px-3 py-1.5 text-xs font-semibold uppercase tracking-wider">XLSX</button>
+      <button onclick="publishToCloud()" class="btn btn-accent px-3 py-1.5 text-xs font-semibold uppercase tracking-wider" title="Upload the Grasshopper export to Supabase">Publish to cloud</button>
+      <button onclick="exportBackup()" class="btn btn-secondary px-3 py-1.5 text-xs font-semibold uppercase tracking-wider">Backup</button>
+      <button onclick="document.getElementById('import-input').click()" class="btn btn-secondary px-3 py-1.5 text-xs font-semibold uppercase tracking-wider">Import backup</button>
+      <input type="file" id="import-input" accept=".json" class="hidden" onchange="importBackup(event)">
+    </div>
+  </header>
+
+  <nav class="bg-slate-200/80 border-b border-slate-300 px-6 pt-2 flex overflow-x-auto gap-1 text-xs font-medium text-slate-600 z-10">
+    <button onclick="switchTab('catalogue')" id="tab-btn-catalogue" class="nav-tab active px-4 py-2.5 hover:text-slate-900 whitespace-nowrap">Catalogue</button>
+    <button onclick="switchTab('ingestion')" id="tab-btn-ingestion" class="nav-tab px-4 py-2.5 hover:text-slate-900 whitespace-nowrap">Paper Ingestion</button>
+    <button onclick="switchTab('manual')" id="tab-btn-manual" class="nav-tab px-4 py-2.5 hover:text-slate-900 whitespace-nowrap">Add Material</button>
+    <button onclick="switchTab('settings')" id="tab-btn-settings" class="nav-tab px-4 py-2.5 hover:text-slate-900 whitespace-nowrap">Settings</button>
+  </nav>
+
+  <main class="flex-1 flex flex-col overflow-hidden p-6 bg-slate-100">
+
+    <!-- CATALOGUE -->
+    <section id="tab-catalogue" class="flex-1 flex flex-col space-y-4 overflow-hidden">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3" id="stats-row"></div>
+      <div class="flex flex-col lg:flex-row justify-between items-stretch lg:items-center gap-3 border border-slate-200 rounded-lg p-3 bg-white shadow-sm">
+        <input type="text" id="search-input" oninput="renderTable()" placeholder="Search label, DOI, tag, source..."
+          class="flex-1 border border-slate-300 rounded-md px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-slate-900">
+        <div class="flex flex-wrap gap-2">
+          <select id="filter-technique" onchange="renderTable()" class="border border-slate-300 rounded-md px-3 py-2 text-xs bg-white font-mono"></select>
+          <select id="filter-data" onchange="renderTable()" class="border border-slate-300 rounded-md px-3 py-2 text-xs bg-white font-mono">
+            <option value="">All data</option>
+            <option value="match">Match-ready (clay+silt+sand)</option>
+            <option value="composition">Has composition</option>
+            <option value="thermal">Has thermal data</option>
+            <option value="strength">Has strength data</option>
+          </select>
+          <select id="filter-verify" onchange="renderTable()" class="border border-slate-300 rounded-md px-3 py-2 text-xs bg-white font-mono">
+            <option value="">All verification</option>
+            <option value="verified">Fully verified</option>
+            <option value="unverified">Pending verification</option>
+            <option value="flagged">Has flags</option>
+          </select>
+          <button onclick="clearFilters()" class="btn btn-secondary px-3 py-2 text-xs font-semibold uppercase">Reset</button>
+          <button onclick="clearAllData()" class="btn btn-secondary px-3 py-2 text-xs font-semibold uppercase text-rose-700">Clear all</button>
+        </div>
+      </div>
+      <div class="flex-1 overflow-auto border border-slate-200 rounded-lg bg-white shadow-sm">
+        <div class="px-3 py-1.5 text-[10px] font-mono text-slate-500 border-b border-slate-200 bg-slate-50 flex flex-wrap gap-x-4 gap-y-1">
+          <span><span class="badge badge-rep">REP</span> extracted from the paper</span>
+          <span><span class="badge badge-calc">CALC</span> computed exactly from other values</span>
+          <span><span class="badge badge-est">EST</span> <em>~estimated</em> from other records in this catalogue (hover for how)</span>
+        </div>
+        <table class="w-full text-left border-collapse">
+          <thead class="bg-slate-900 text-slate-100 text-[11px] uppercase tracking-wider sticky top-0 z-10">
+            <tr>
+              <th class="p-3 border-r border-slate-800 w-56">Material / Tags</th>
+              <th class="p-3 border-r border-slate-800 w-64">Composition &amp; Soil Fractions</th>
+              <th class="p-3 border-r border-slate-800">Thermal</th>
+              <th class="p-3 border-r border-slate-800">Strength</th>
+              <th class="p-3 border-r border-slate-800">Source / Verification</th>
+              <th class="p-3 text-center w-32">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="catalogue-tbody" class="text-xs"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- INGESTION -->
+    <section id="tab-ingestion" class="flex-1 flex flex-col space-y-4 overflow-y-auto hidden">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 flex-1">
+        <div class="border border-slate-200 rounded-lg p-5 bg-white shadow-sm flex flex-col space-y-4">
+          <div class="flex justify-between items-center border-b border-slate-200 pb-3">
+            <h3 class="font-bold text-slate-900 text-xs uppercase tracking-wider">1. Paper upload</h3>
+            <span class="text-[11px] text-slate-500 font-mono">PDF sent whole (text + figures)</span>
+          </div>
+          <div id="vision-status-banner" class="border rounded-md p-2.5 text-xs font-mono flex items-center justify-between bg-amber-50 border-amber-300 text-amber-900">
+            <span id="vision-status-text">No paper loaded yet.</span>
+            <span id="vision-count-badge" class="bg-amber-200 px-2 py-0.5 rounded text-[10px] font-bold">EMPTY</span>
+          </div>
+          <div id="drop-zone" onclick="document.getElementById('file-input').click()"
+            ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleFileDrop(event)"
+            class="border-2 border-dashed border-slate-300 hover:border-slate-800 bg-slate-50 rounded-lg p-4 text-center cursor-pointer transition-colors space-y-1.5">
+            <input type="file" id="file-input" multiple accept=".pdf,.txt,.png,.jpg,.jpeg,.webp" class="hidden" onchange="handleFileSelect(event)">
+            <div class="text-xs font-semibold text-slate-800">Click or drag &amp; drop the paper (PDF / TXT) or a table / figure image</div>
+            <div class="text-[10px] text-slate-500 font-mono">Tip: paste screenshots of tables with <kbd class="bg-slate-200 px-1 rounded">Ctrl+V</kbd></div>
+            <div id="file-status-indicator" class="hidden text-[11px] font-semibold font-mono text-slate-900 bg-slate-200 px-2.5 py-1 rounded border border-slate-400 mt-1">File loaded</div>
+            <div id="image-preview-container" class="hidden mt-2 flex flex-wrap gap-2 max-h-36 overflow-y-auto p-1 bg-slate-100 rounded border border-slate-300"></div>
+          </div>
+          <div class="flex items-center justify-between">
+            <span class="text-[11px] font-bold text-slate-600 uppercase">Extracted / pasted text (page markers kept):</span>
+            <button onclick="clearUploadedFile()" class="text-[10px] text-slate-500 hover:text-slate-800 underline font-mono">Clear everything</button>
+          </div>
+          <textarea id="paper-raw-text" rows="8" placeholder="PDF text appears here. You can also paste a table or the methods section directly."
+            class="w-full border border-slate-300 rounded-md p-3.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-slate-900 flex-1 resize-none bg-slate-50"></textarea>
+          <div class="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-200">
+            <div class="flex items-center gap-2 text-xs">
+              <span class="font-semibold text-slate-700 uppercase">Engine:</span>
+              <select id="ingestion-llm-provider" class="border border-slate-300 rounded-md px-2.5 py-1.5 text-xs bg-white font-mono">
+                <option value="cascade">Auto cascade (all configured models, in order)</option>
+              </select>
+            </div>
+            <button onclick="runAIExtraction()" id="extract-btn" class="btn btn-primary px-5 py-2 text-xs font-semibold uppercase tracking-wider">Extract materials</button>
+          </div>
+        </div>
+
+        <div class="border border-slate-200 rounded-lg p-5 bg-white shadow-sm flex flex-col space-y-4">
+          <div class="flex justify-between items-center border-b border-slate-200 pb-3">
+            <h3 class="font-bold text-slate-900 text-xs uppercase tracking-wider">2. Review extracted materials</h3>
+            <span id="extraction-status-tag" class="text-[11px] font-semibold px-2.5 py-1 rounded-md bg-slate-100 text-slate-600 font-mono">AWAITING INPUT</span>
+          </div>
+          <div id="extraction-results-container" class="flex-1 flex flex-col overflow-y-auto space-y-3"></div>
+          <div class="pt-2 border-t border-slate-200 flex justify-end gap-2">
+            <button onclick="clearExtraction()" class="btn btn-secondary px-4 py-2 text-xs font-semibold uppercase tracking-wider">Discard</button>
+            <button onclick="commitExtraction()" id="ingest-commit-btn" disabled class="btn border border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed px-5 py-2 text-xs font-semibold uppercase tracking-wider">Save selected to catalogue</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- MANUAL -->
+    <section id="tab-manual" class="flex-1 flex flex-col space-y-4 overflow-y-auto hidden">
+      <form onsubmit="handleManualSubmit(event)" class="max-w-4xl mx-auto w-full border border-slate-200 rounded-lg p-6 bg-white shadow-sm space-y-5 text-xs">
+        <div class="border-b border-slate-200 pb-3">
+          <h2 class="font-bold text-slate-900 text-sm uppercase tracking-wider">Add a material by hand</h2>
+          <p class="text-xs text-slate-500 mt-0.5">Use for values from tables you typed yourself, lab data, or datasheets. Entries are saved as unverified.</p>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <label class="block md:col-span-2"><span class="font-semibold text-slate-700">Material label *</span>
+            <input id="m-label" required class="mt-1 w-full border border-slate-300 rounded p-2 font-mono" placeholder="e.g. Printed earth, 3% straw"></label>
+          <label class="block"><span class="font-semibold text-slate-700">DOI / source</span>
+            <input id="m-doi" class="mt-1 w-full border border-slate-300 rounded p-2 font-mono" placeholder="10.xxxx/..."></label>
+          <label class="block md:col-span-3"><span class="font-semibold text-slate-700">Paper title / note</span>
+            <input id="m-title" class="mt-1 w-full border border-slate-300 rounded p-2 font-mono"></label>
+        </div>
+        <div>
+          <div class="font-semibold text-slate-700 mb-1">Technique tags</div>
+          <div id="m-tech" class="flex flex-wrap gap-3"></div>
+        </div>
+        <div>
+          <div class="font-semibold text-slate-700 mb-1">Soil fractions of the mineral part (%)</div>
+          <div class="grid grid-cols-4 gap-3" id="m-soil"></div>
+        </div>
+        <div>
+          <div class="flex items-center justify-between mb-1">
+            <span class="font-semibold text-slate-700">Composition breakdown (% of mix)</span>
+            <button type="button" onclick="addCompRow()" class="btn btn-secondary px-2.5 py-1 text-[10px] font-semibold uppercase">+ Add component</button>
+          </div>
+          <div id="m-comp" class="space-y-2"></div>
+        </div>
+        <div>
+          <div class="font-semibold text-slate-700 mb-1">Properties</div>
+          <div class="grid grid-cols-2 md:grid-cols-3 gap-3" id="m-props"></div>
+        </div>
+        <div class="flex justify-end gap-2 pt-2 border-t border-slate-200">
+          <button type="button" onclick="resetManualForm()" class="btn btn-secondary px-4 py-2 text-xs font-semibold uppercase">Reset</button>
+          <button type="submit" class="btn btn-primary px-5 py-2 text-xs font-semibold uppercase tracking-wider">Add to catalogue</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="tab-settings" class="flex-1 flex flex-col space-y-4 overflow-y-auto hidden">
+      <div class="max-w-2xl mx-auto w-full border border-slate-200 rounded-lg p-6 bg-white shadow-sm space-y-5 text-xs font-mono">
+        <div class="border-b border-slate-200 pb-3">
+          <h2 class="font-bold text-slate-900 text-sm uppercase tracking-wider font-sans">Settings</h2>
+        </div>
+        <div class="border border-slate-200 rounded-lg p-4 bg-slate-50 space-y-2">
+          <label class="font-semibold text-slate-900 uppercase block">Gemini API key</label>
+          <p class="text-[11px] text-slate-600 font-sans">The key lives on the server (the <code>.env</code> file or the <code>GEMINI_API_KEY</code> environment variable). This page never sees it and cannot display it. Models are set with <code>GEMINI_MODELS</code>.</p>
+          <div id="cfg-key-status" class="font-semibold">Checking server...</div>
+          <div id="cfg-server-info" class="text-[11px] text-slate-500 font-sans break-all"></div>
+        </div>
+        <div class="border border-slate-200 rounded-lg p-4 bg-slate-50 space-y-2">
+          <label class="font-semibold text-slate-900 uppercase block">Cloud copy for Grasshopper (Supabase)</label>
+          <p class="text-[11px] text-slate-600 font-sans">"Publish to cloud" uploads the Grasshopper JSON to a Supabase Storage bucket. Set <code>SUPABASE_URL</code> and <code>SUPABASE_SERVICE_KEY</code> in <code>.env</code> (server side only). Paste the URL below into the Grasshopper fetch component.</p>
+          <div id="cfg-cloud-status" class="font-semibold">Checking...</div>
+          <textarea id="cfg-cloud-urls" readonly rows="3" onclick="this.select()" class="w-full border border-slate-300 rounded-md p-2 bg-white text-[11px] hidden"></textarea>
+        </div>
+        <div class="border border-slate-200 rounded-lg p-4 bg-slate-50 space-y-2">
+          <label class="font-semibold text-slate-900 uppercase block">Verifier name</label>
+          <p class="text-[11px] text-slate-600 font-sans">Written next to each value you verify in the audit view.</p>
+          <input type="text" id="cfg-verifier" placeholder="Your name" class="w-full border border-slate-300 rounded-md p-2 bg-white">
+        </div>
+        <div class="pt-2 flex justify-between items-center">
+          <button onclick="testLLMConnection()" class="btn btn-secondary px-4 py-2 font-semibold uppercase tracking-wider">Test connection</button>
+          <button onclick="saveSettings()" class="btn btn-primary px-5 py-2 font-semibold uppercase tracking-wider">Save settings</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- AUDIT MODAL -->
+  <div id="audit-sheet-modal" class="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white border border-slate-300 rounded-xl max-w-5xl w-full max-h-[92vh] flex flex-col overflow-hidden shadow-2xl">
+      <div class="bg-slate-900 text-white p-4 flex justify-between items-center border-b border-slate-800">
+        <div class="flex items-center gap-3">
+          <div class="font-bold text-xs uppercase tracking-wider" id="audit-modal-title">AUDIT</div>
+          <span id="audit-specimen-progress-tag" class="badge badge-man">0/0 verified</span>
+        </div>
+        <button onclick="closeAuditModal()" class="text-slate-400 hover:text-white font-bold text-sm p-1">&#10005;</button>
+      </div>
+      <div class="flex-1 overflow-y-auto p-5 space-y-5 text-xs font-mono">
+        <div class="flex flex-wrap gap-2 border-b border-slate-200 pb-3" id="audit-property-tabs"></div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-5 items-start">
+          <div class="space-y-4 border border-slate-200 rounded-lg p-4 bg-slate-50">
+            <div class="flex justify-between items-center border-b border-slate-200 pb-2">
+              <span class="font-bold text-slate-800 uppercase" id="audit-prop-display-name">-</span>
+              <span id="audit-prop-type-badge" class="badge badge-rep">REPORTED</span>
+            </div>
+            <div class="grid grid-cols-2 gap-3 bg-white p-3 rounded border border-slate-200">
+              <div><span class="text-slate-500 block text-[10px] uppercase">Catalogue value</span>
+                <strong class="text-slate-900 text-sm break-words" id="audit-active-val">-</strong></div>
+              <div><span class="text-slate-500 block text-[10px] uppercase">Audit status</span>
+                <span id="audit-status-pill" class="badge badge-pend">PENDING</span></div>
+            </div>
+            <div class="space-y-1.5">
+              <div class="flex justify-between items-center">
+                <span class="text-[10px] font-bold text-slate-600 uppercase">Quote from the paper:</span>
+                <span class="text-[10px] font-bold text-slate-600" id="audit-page-tag">Page: -</span>
+              </div>
+              <blockquote id="audit-quote-box" class="p-3 bg-white border-l-4 border-slate-900 text-slate-700 italic text-[11px] leading-relaxed rounded-r"></blockquote>
+            </div>
+            <div class="border-t border-slate-200 pt-3 space-y-2" id="audit-override-block">
+              <div class="text-[10px] font-bold text-slate-800 uppercase">Correct the value</div>
+              <div class="flex items-center gap-2">
+                <input type="number" step="any" id="audit-override-input" placeholder="Corrected value" class="flex-1 border border-slate-300 rounded p-1.5 text-xs bg-white font-mono">
+                <button onclick="applyAuditOverride()" class="btn btn-secondary px-3 py-1.5 text-[10px] font-semibold uppercase">Apply</button>
+              </div>
+            </div>
+            <input type="text" id="audit-note-input" placeholder="Audit note (e.g. checked against Table 3)" class="w-full border border-slate-300 rounded p-1.5 text-xs bg-white font-mono">
+            <div class="pt-2 flex justify-between items-center border-t border-slate-200">
+              <button onclick="toggleVerifyProperty(false)" class="btn btn-secondary px-3 py-1.5 text-xs font-semibold uppercase text-slate-600">Mark unverified</button>
+              <button onclick="toggleVerifyProperty(true)" class="btn bg-emerald-700 hover:bg-emerald-800 text-white px-4 py-1.5 text-xs font-bold uppercase tracking-wider">Verify &amp; sign off</button>
+            </div>
+          </div>
+          <div class="border border-slate-200 rounded-lg p-4 bg-slate-50 flex flex-col space-y-3">
+            <div class="flex justify-between items-center border-b border-slate-200 pb-2">
+              <span class="font-bold text-slate-800 uppercase text-xs">Source page</span>
+              <span id="audit-pdf-status" class="text-[10px] text-slate-500 font-mono"></span>
+            </div>
+            <div class="flex-1 border border-slate-300 rounded bg-white overflow-auto max-h-[420px] flex items-center justify-center p-2">
+              <canvas id="audit-pdf-canvas" class="max-w-full h-auto shadow-sm"></canvas>
+              <div id="audit-canvas-fallback" class="hidden text-center text-slate-400 p-6 space-y-2">
+                <div class="text-xs font-semibold text-slate-600">PDF not loaded in the browser</div>
+                <div class="text-[10px] text-slate-500">Upload the same paper again in Paper Ingestion to see the source page here.</div>
+              </div>
+            </div>
+            <div class="flex justify-between items-center text-[10px] text-slate-500 font-mono pt-1">
+              <span>Cross-check against the page</span>
+              <button onclick="jumpToAuditPdfPage()" class="btn btn-secondary px-2.5 py-1 text-[9px] uppercase font-bold">Jump to page</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="p-4 bg-slate-50 border-t border-slate-200 flex justify-between items-center">
+        <span id="audit-modal-footer-id" class="font-semibold text-xs text-slate-700 font-mono">-</span>
+        <button onclick="closeAuditModal()" class="btn btn-primary px-5 py-2 font-semibold text-xs uppercase tracking-wider">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SHEET MODAL -->
+  <div id="spec-sheet-modal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-white border border-slate-200 rounded-xl max-w-3xl w-full max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+      <div class="bg-slate-900 text-white p-4 flex justify-between items-center border-b border-slate-800">
+        <div class="font-bold text-xs uppercase tracking-wider" id="modal-spec-title">MATERIAL SHEET</div>
+        <button onclick="closeSpecModal()" class="text-slate-400 hover:text-white font-bold text-sm p-1">&#10005;</button>
+      </div>
+      <div id="modal-spec-body" class="p-5 overflow-y-auto space-y-4 text-xs font-mono"></div>
+      <div class="p-4 bg-slate-50 border-t border-slate-200 flex justify-end">
+        <button onclick="closeSpecModal()" class="btn btn-primary px-5 py-2 font-semibold text-xs uppercase tracking-wider">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="notification-toast" class="fixed bottom-5 right-5 bg-slate-900 text-white text-xs font-mono px-4 py-3 rounded-lg border border-slate-700 shadow-lg hidden z-50 max-w-md"></div>
+
+  <script>
+    if (window.pdfjsLib) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+    const VERIFIER_STORAGE = 'earth_catalogue_verifier';
+    const SCHEMA = 'earth_v1';
+
+    const TECHNIQUES = {
+      '3d_printed': '3D printed',
+      'cob': 'Cob',
+      'adobe': 'Adobe',
+      'rammed_earth': 'Rammed earth',
+      'compressed_earth_block': 'Compressed earth block',
+      'cast_earth': 'Cast / poured earth',
+      'wattle_and_daub': 'Wattle & daub',
+      'earthbag': 'Earthbag',
+      'other': 'Other'
+    };
+    const TECH_ALIASES = {
+      '3d_printing': '3d_printed', '3dp': '3d_printed', '3d_print': '3d_printed', 'additive_manufacturing': '3d_printed',
+      'printed': '3d_printed', 'printed_earth': '3d_printed', 'ceb': 'compressed_earth_block',
+      'mud_brick': 'adobe', 'mudbrick': 'adobe', 'sun_dried_brick': 'adobe', 'pise': 'rammed_earth', 'poured_earth': 'cast_earth'
+    };
+
+    const CATEGORIES = ['clay', 'silt', 'sand', 'gravel', 'fibre', 'binder', 'stabilizer', 'aggregate', 'water', 'other'];
+    const CAT_COLORS = {
+      clay: '#9a3412', silt: '#c2956b', sand: '#e7d3a7', gravel: '#78716c', fibre: '#65a30d',
+      binder: '#475569', stabilizer: '#0284c7', aggregate: '#a8a29e', water: '#38bdf8', other: '#cbd5e1'
+    };
+
+    // group: thermal | mechanical | physical | hygric
+    // range = [min, max] plausibility window for unit-slip detection (not a validation of the paper)
+    const PROPS = [
+      { key: 'dry_density_kg_m3', label: 'Dry density (\u03C1)', unit: 'kg/m\u00B3', group: 'physical', range: [300, 2600] },
+      { key: 'porosity_pct', label: 'Porosity', unit: '%', group: 'physical', range: [0, 80] },
+      { key: 'thermal_conductivity_W_mK', label: 'Thermal conductivity (\u03BB)', unit: 'W/m\u00B7K', group: 'thermal', range: [0.05, 2.5] },
+      { key: 'specific_heat_J_kgK', label: 'Specific heat (cp)', unit: 'J/kg\u00B7K', group: 'thermal', range: [400, 2000] },
+      { key: 'thermal_diffusivity_mm2_s', label: 'Thermal diffusivity', unit: 'mm\u00B2/s', group: 'thermal', range: [0.05, 2] },
+      { key: 'volumetric_heat_capacity_MJ_m3K', label: 'Volumetric heat capacity', unit: 'MJ/m\u00B3K', group: 'thermal', range: [0.2, 3.5], derivedOnly: true },
+      { key: 'decrement_factor', label: 'Decrement factor', unit: '-', group: 'thermal', range: [0, 1] },
+      { key: 'time_lag_h', label: 'Time lag', unit: 'h', group: 'thermal', range: [0, 30] },
+      { key: 'compressive_strength_MPa', label: 'Compressive strength (fc)', unit: 'MPa', group: 'mechanical', range: [0, 60] },
+      { key: 'flexural_strength_MPa', label: 'Flexural strength (ff)', unit: 'MPa', group: 'mechanical', range: [0, 15] },
+      { key: 'tensile_strength_MPa', label: 'Tensile strength (ft)', unit: 'MPa', group: 'mechanical', range: [0, 8] },
+      { key: 'elastic_modulus_MPa', label: 'Elastic modulus (E)', unit: 'MPa', group: 'mechanical', range: [1, 20000] },
+      { key: 'shrinkage_pct', label: 'Drying shrinkage', unit: '%', group: 'hygric', range: [0, 25] },
+      { key: 'water_absorption_pct', label: 'Water absorption', unit: '%', group: 'hygric', range: [0, 60] }
+    ];
+    const PROP_BY_KEY = Object.fromEntries(PROPS.map(p => [p.key, p]));
+    const SOIL_KEYS = ['clay_pct', 'silt_pct', 'sand_pct', 'gravel_pct'];
+
+    // ============================================================
+    // HELPERS
+    // ============================================================
+    function num(v) {
+      if (v === null || v === undefined || v === '') return null;
+      const n = typeof v === 'number' ? v : parseFloat(String(v).replace(',', '.'));
+      return Number.isFinite(n) ? n : null;
+    }
+    function round(n, d = 3) { return n == null ? null : Math.round(n * Math.pow(10, d)) / Math.pow(10, d); }
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+    function cleanDoi(d) { return String(d || '').replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '').trim(); }
+    function fmt(v, d = 2) { return v == null ? '-' : (Math.round(v * Math.pow(10, d)) / Math.pow(10, d)).toString(); }
+
+    // USDA texture class (names match the DSMW / SWAT TEXTURE column, e.g. SANDY_CLAY_LOAM)
+    function usdaTexture(sand, silt, clay) {
+      if ([sand, silt, clay].some(v => v == null)) return null;
+      const t = sand + silt + clay;
+      if (t <= 0) return null;
+      sand = sand / t * 100; silt = silt / t * 100; clay = clay / t * 100;
+      if (silt + 1.5 * clay < 15) return 'SAND';
+      if (silt + 1.5 * clay >= 15 && silt + 2 * clay < 30) return 'LOAMY_SAND';
+      if ((clay >= 7 && clay < 20 && sand > 52 && silt + 2 * clay >= 30) || (clay < 7 && silt < 50 && silt + 2 * clay >= 30)) return 'SANDY_LOAM';
+      if (clay >= 7 && clay < 27 && silt >= 28 && silt < 50 && sand <= 52) return 'LOAM';
+      if ((silt >= 50 && clay >= 12 && clay < 27) || (silt >= 50 && silt < 80 && clay < 12)) return 'SILT_LOAM';
+      if (silt >= 80 && clay < 12) return 'SILT';
+      if (clay >= 20 && clay < 35 && silt < 28 && sand > 45) return 'SANDY_CLAY_LOAM';
+      if (clay >= 27 && clay < 40 && sand > 20 && sand <= 45) return 'CLAY_LOAM';
+      if (clay >= 27 && clay < 40 && sand <= 20) return 'SILTY_CLAY_LOAM';
+      if (clay >= 35 && sand > 45) return 'SANDY_CLAY';
+      if (clay >= 40 && silt >= 40) return 'SILTY_CLAY';
+      if (clay >= 40 && sand <= 45 && silt < 40) return 'CLAY';
+      return null;
+    }
+
+    function normTech(t) {
+      let k = String(t || '').toLowerCase().trim().replace(/[\s\-\/]+/g, '_');
+      if (!k) return null;
+      if (TECH_ALIASES[k]) k = TECH_ALIASES[k];
+      return TECHNIQUES[k] ? k : 'other';
+    }
+
+    function sumPct(list) { return list.reduce((a, c) => a + (c.pct || 0), 0); }
+
+    // ============================================================
+    // NORMALISATION: raw LLM / form output  ->  catalogue record
+    // Everything derived (tags, texture class, thermal values) is computed here in code, not by the LLM.
+    // ============================================================
+    function normalizeMaterial(raw, paper, idx) {
+      const rec = {
+        schema: SCHEMA,
+        material_label: String(raw.material_label || `Material ${(idx || 0) + 1}`).trim(),
+        technique_tags: [...new Set((Array.isArray(raw.technique_tags) ? raw.technique_tags : []).map(normTech).filter(Boolean))],
+        technique_note: raw.technique_note ? String(raw.technique_note) : null,
+        data_origin: raw.data_origin === 'cited_from_other_work' ? 'cited_from_other_work' : 'measured_in_this_paper',
+        test_conditions: raw.test_conditions ? String(raw.test_conditions) : null,
+        curing: raw.curing ? String(raw.curing) : null,
+        print_parameters: raw.print_parameters && typeof raw.print_parameters === 'object' ? raw.print_parameters : null,
+        notes: raw.notes ? String(raw.notes) : null,
+        paper: {
+          title: String(paper?.title || ''), doi: cleanDoi(paper?.doi), year: num(paper?.year),
+          soil_origin: paper?.soil_origin ? String(paper.soil_origin) : null
+        },
+        flags: [],
+        cross_references: []
+      };
+
+      // ---- composition
+      rec.composition = (Array.isArray(raw.composition) ? raw.composition : []).map(c => {
+        const cat = String(c.category || '').toLowerCase().trim();
+        const basis = ['wt_dry', 'wt_total', 'vol'].includes(c.basis) ? c.basis : null;
+        return {
+          component: String(c.component || '').trim(),
+          category: CATEGORIES.includes(cat) ? cat : 'other',
+          pct: num(c.pct), basis,
+          detail: c.detail ? String(c.detail) : null,
+          converted: !!c.converted
+        };
+      }).filter(c => c.component || c.pct != null);
+
+      const dry = rec.composition.filter(c => c.category !== 'water');
+      const dryPcts = dry.filter(c => c.pct != null);
+      const drySum = sumPct(dryPcts), allSum = sumPct(rec.composition.filter(c => c.pct != null));
+      if (dryPcts.length >= 2 && Math.abs(drySum - 100) > 3 && Math.abs(allSum - 100) > 3) {
+        rec.flags.push(`composition_sum_off (${round(drySum, 1)}% dry / ${round(allSum, 1)}% total)`);
+      }
+      const mixed = new Set(rec.composition.filter(c => c.pct != null && c.basis).map(c => c.basis));
+      if (mixed.size > 1) rec.flags.push('mixed_composition_basis');
+
+      // ---- soil fractions (reported by the paper, else computed from composition)
+      const sf = raw.soil_fractions || {};
+      rec.soil_fractions = {};
+      SOIL_KEYS.forEach(k => { rec.soil_fractions[k] = num(sf[k]); });
+      rec.soil_fractions_note = sf.note ? String(sf.note) : null;
+      const reportedAny = SOIL_KEYS.some(k => rec.soil_fractions[k] != null);
+      rec.soil_fractions_source = reportedAny ? 'reported' : null;
+      if (!reportedAny) {
+        const sums = {};
+        ['clay', 'silt', 'sand', 'gravel'].forEach(cat => {
+          const items = rec.composition.filter(c => c.category === cat && c.pct != null);
+          sums[cat] = items.length ? sumPct(items) : null;
+        });
+        const present = ['clay', 'silt', 'sand', 'gravel'].filter(c => sums[c] != null);
+        const tot = present.reduce((a, c) => a + sums[c], 0);
+        if (present.length >= 2 && tot > 0) {
+          // an ingredient that is not in the recipe is absent from the mix, so clay/silt/sand missing = 0
+          const assumed = [];
+          ['clay', 'silt', 'sand'].forEach(cat => { if (sums[cat] == null) { sums[cat] = 0; assumed.push(cat); } });
+          ['clay', 'silt', 'sand', 'gravel'].forEach(cat => {
+            rec.soil_fractions[`${cat}_pct`] = sums[cat] != null ? round(sums[cat] / tot * 100, 1) : null;
+          });
+          rec.soil_fractions_source = 'computed_from_composition';
+          rec.soil_fractions_note = 'Computed from the composition list (mineral ingredients only, normalised to 100%).' +
+            (assumed.length ? ` Not listed, so taken as 0: ${assumed.join(', ')}.` : '');
+        }
+      }
+      const sfv = rec.soil_fractions;
+      const sfSum = SOIL_KEYS.reduce((a, k) => a + (sfv[k] || 0), 0);
+      if (SOIL_KEYS.some(k => sfv[k] != null) && Math.abs(sfSum - 100) > 5) rec.flags.push(`soil_fractions_sum_off (${round(sfSum, 1)}%)`);
+      rec.soil_texture_class = usdaTexture(sfv.sand_pct, sfv.silt_pct, sfv.clay_pct);
+
+      // ---- summary numbers useful for matching
+      const catSum = cat => { const l = rec.composition.filter(c => c.category === cat && c.pct != null); return l.length ? round(sumPct(l), 2) : null; };
+      const waterRaw = num(raw.water_content_pct);
+      rec.summary = {
+        fibre_pct: catSum('fibre'),
+        stabilizer_pct: (() => { const a = catSum('stabilizer'), b = catSum('binder'); return a == null && b == null ? null : round((a || 0) + (b || 0), 2); })(),
+        water_content_pct: waterRaw != null ? waterRaw : catSum('water')
+      };
+
+      // ---- properties
+      const rp = raw.properties || {};
+      rec.properties = {};
+      const ev = raw.evidence || {};
+      rec.provenance = {};
+      const mkProv = (type, e, note) => ({
+        type, page: num(e?.page), quote: e?.quote ? String(e.quote) : (note || ''), from_figure: !!e?.from_figure,
+        verified: false, verified_by: null, verified_date: null, audit_note: ''
+      });
+      PROPS.filter(p => !p.derivedOnly).forEach(p => {
+        const v = num(rp[p.key]);
+        if (v == null) return;
+        rec.properties[p.key] = v;
+        rec.provenance[p.key] = mkProv(raw._manual ? 'manual' : 'reported', ev[p.key], raw._manual ? 'Entered manually' : '');
+        if (p.range && (v < p.range[0] || v > p.range[1])) rec.flags.push(`implausible:${p.key}=${v} (expected ${p.range[0]}-${p.range[1]} ${p.unit}; unit slip?)`);
+      });
+      if (rec.composition.length) rec.provenance.composition = mkProv(raw._manual ? 'manual' : 'reported', ev.composition, raw._manual ? 'Entered manually' : '');
+      if (rec.soil_fractions_source === 'reported') rec.provenance.soil_fractions = mkProv(raw._manual ? 'manual' : 'reported', ev.soil_fractions, raw._manual ? 'Entered manually' : '');
+
+      applyDerived(rec);
+      rec.tags = deriveTags(rec);
+      return rec;
+    }
+
+    // derived thermal values: computed, flagged as derived, never overwrite reported values
+    function applyDerived(rec) {
+      const P = rec.properties;
+      // remove stale derived values before recomputing
+      Object.keys(rec.provenance).forEach(k => { if (rec.provenance[k].type === 'derived') { delete rec.provenance[k]; delete P[k]; } });
+      const rho = P.dry_density_kg_m3, cp = P.specific_heat_J_kgK, k = P.thermal_conductivity_W_mK;
+      const mkD = (note) => ({ type: 'derived', page: null, quote: note, from_figure: false, verified: false, verified_by: null, verified_date: null, audit_note: '' });
+      if (rho != null && cp != null && P.volumetric_heat_capacity_MJ_m3K == null) {
+        P.volumetric_heat_capacity_MJ_m3K = round(rho * cp / 1e6, 3);
+        rec.provenance.volumetric_heat_capacity_MJ_m3K = mkD('Derived: dry density x specific heat / 1e6');
+      }
+      if (rho != null && cp != null && k != null && P.thermal_diffusivity_mm2_s == null) {
+        P.thermal_diffusivity_mm2_s = round(k / (rho * cp) * 1e6, 4);
+        rec.provenance.thermal_diffusivity_mm2_s = mkD('Derived: conductivity / (density x specific heat)');
+      }
+    }
+
+    function deriveTags(rec) {
+      const tags = new Set(rec.technique_tags);
+      const comp = rec.composition;
+      const has = cat => comp.some(c => c.category === cat && (c.pct == null || c.pct > 0));
+      if (has('fibre')) tags.add('fibre_reinforced');
+      const stabText = comp.filter(c => c.category === 'stabilizer' || c.category === 'binder')
+        .map(c => `${c.component} ${c.detail || ''}`.toLowerCase()).join(' ');
+      if (has('stabilizer') || has('binder')) {
+        let matched = false;
+        if (/lime/.test(stabText)) { tags.add('stabilised_lime'); matched = true; }
+        if (/cement|opc|portland/.test(stabText)) { tags.add('stabilised_cement'); matched = true; }
+        if (/gypsum/.test(stabText)) { tags.add('stabilised_gypsum'); matched = true; }
+        if (/bitumen|asphalt/.test(stabText)) { tags.add('stabilised_bitumen'); matched = true; }
+        if (!matched) tags.add('stabilised_other');
+      } else if (comp.length) {
+        tags.add('unstabilised');
+      }
+      return [...tags];
+    }
+
+    // ============================================================
+    // VERIFICATION HELPERS
+    // ============================================================
+    function auditKeys(item) { return Object.keys(item.provenance || {}).filter(k => item.provenance[k].type !== 'derived'); }
+    function verifiedRatio(item) {
+      const keys = auditKeys(item);
+      return { verified: keys.filter(k => item.provenance[k].verified).length, total: keys.length };
+    }
+    function isFullyVerified(item) { const r = verifiedRatio(item); return r.total > 0 && r.verified === r.total; }
+    function isMatchReady(item) { const s = item.soil_fractions || {}; return s.clay_pct != null && s.silt_pct != null && s.sand_pct != null; }
+    function hasThermal(item) { const p = item.properties || {}; return p.thermal_conductivity_W_mK != null || p.specific_heat_J_kgK != null; }
+    function hasStrength(item) { const p = item.properties || {}; return p.compressive_strength_MPa != null || p.flexural_strength_MPa != null || p.tensile_strength_MPa != null; }
+    function dedupeKey(item) { return `${(item.paper?.doi || item.paper?.title || '').toLowerCase()}|${item.material_label.toLowerCase()}|${(item.test_conditions || '').toLowerCase()}`; }
+
+    // ============================================================
+    // STATE
+    // ============================================================
+    let catalogue = [];
+    let currentExtracted = null;      // { paper, materials: [normalized + _include] }
+    let currentPdf = null;            // { id (server hash), name, pages, sendWhole }
+    let currentUploadedImages = [];
+    let catalogueLoaded = false;      // never save before the server copy has been read
+    let activeAuditId = null;
+    let activeAuditKey = null;
+
+    // ============================================================
+    // SERVER API + PERSISTENCE
+    // ============================================================
+    async function api(path, opts = {}) {
+      const o = { ...opts, headers: { 'X-Catalogue-Client': '1', ...(opts.headers || {}) } };
+      const res = await fetch(path, o);
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try { const j = await res.json(); if (j.error) msg = j.error; } catch (e) {}
+        throw new Error(msg);
+      }
+      return res;
+    }
+    function setSaveStatus(kind, detail) {
+      const el = document.getElementById('save-status');
+      if (!el) return;
+      const m = { saving: ['saving...', 'text-slate-400'], saved: ['saved', 'text-emerald-700'],
+                  error: ['NOT SAVED', 'text-rose-700 font-bold'], offline: ['server offline', 'text-rose-700 font-bold'] }[kind];
+      el.innerText = m[0]; el.className = 'text-[11px] font-mono mr-1 ' + m[1];
+      el.title = detail || '';
+    }
+    let saveTimer = null, saveChain = Promise.resolve(), unsaved = false;
+    function saveState() {
+      completeCache = new WeakMap();
+      renderTable();
+      unsaved = true; setSaveStatus('saving');
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => { saveChain = saveChain.then(persistCatalogue); }, 400);
+    }
+    async function persistCatalogue() {
+      if (!catalogueLoaded) { setSaveStatus('error', 'Catalogue was never loaded from the server, so saving is disabled.'); return; }
+      try {
+        await api('/api/catalogue', {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            records: catalogue,
+            export_all: buildExportPayload(catalogue, false),
+            export_verified: buildExportPayload(catalogue.filter(isFullyVerified), true)
+          })
+        });
+        unsaved = false; setSaveStatus('saved');
+      } catch (e) {
+        setSaveStatus('error', e.message);
+        showNotification(`SAVE FAILED: ${e.message}. Changes are only in this page. Use Backup to keep them.`);
+      }
+    }
+    window.addEventListener('beforeunload', e => { if (unsaved) { e.preventDefault(); e.returnValue = ''; } });
+
+    async function loadFromServer() {
+      try {
+        const [cat, st] = await Promise.all([api('/api/catalogue').then(r => r.json()), api('/api/status').then(r => r.json())]);
+        const recs = Array.isArray(cat.records) ? cat.records : [];
+        catalogue = recs.filter(r => r && r.schema === SCHEMA);
+        catalogueLoaded = true;
+        setSaveStatus('saved', 'Loaded from the server');
+        const sel = document.getElementById('ingestion-llm-provider');
+        st.models.forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; sel.appendChild(o); });
+        PDF_INLINE_MAX = st.max_inline_pdf_bytes || PDF_INLINE_MAX;
+        const k = document.getElementById('cfg-key-status');
+        k.textContent = st.key_configured ? 'Key loaded on server' : 'NO KEY on server: add GEMINI_API_KEY to .env and restart';
+        k.className = 'font-semibold ' + (st.key_configured ? 'text-emerald-700' : 'text-rose-700');
+        document.getElementById('cfg-server-info').textContent = `Data folder: ${st.data_dir}`;
+        showCloudStatus(st.cloud_configured, st.cloud_urls);
+        renderTable();
+      } catch (e) {
+        catalogueLoaded = false;
+        setSaveStatus('offline', e.message);
+        showNotification('Cannot reach the server. Start it with "python app.py" and open http://127.0.0.1:8000 (not the file directly). Saving is disabled.');
+      }
+    }
+    let PDF_INLINE_MAX = 14 * 1024 * 1024;
+
+    function showCloudStatus(configured, urls) {
+      const c = document.getElementById('cfg-cloud-status'), u = document.getElementById('cfg-cloud-urls');
+      c.textContent = configured ? 'Cloud upload is configured' : 'Not configured (optional): add SUPABASE_URL and SUPABASE_SERVICE_KEY to .env and restart';
+      c.className = 'font-semibold ' + (configured ? 'text-emerald-700' : 'text-slate-500');
+      if (urls) { u.value = `Verified only:\n${urls.verified}\nEverything:\n${urls.all}`; u.classList.remove('hidden'); }
+    }
+    async function publishToCloud() {
+      showNotification('Saving, then uploading...');
+      try {
+        clearTimeout(saveTimer);
+        saveChain = saveChain.then(persistCatalogue); await saveChain;
+        const j = await (await api('/api/publish', { method: 'POST' })).json();
+        showCloudStatus(true, j.urls);
+        showNotification('Published. The Grasshopper URLs are in Settings.');
+      } catch (e) { showNotification(`Publish failed: ${e.message}`); }
+    }
+
+    function showNotification(msg) {
+      const toast = document.getElementById('notification-toast');
+      if (!toast) return;
+      toast.innerText = msg;
+      toast.classList.remove('hidden');
+      clearTimeout(showNotification._t);
+      showNotification._t = setTimeout(() => toast.classList.add('hidden'), 4500);
+    }
+    function switchTab(tabId) {
+      ['catalogue', 'ingestion', 'manual', 'settings'].forEach(id => {
+        document.getElementById(`tab-btn-${id}`)?.classList.toggle('active', id === tabId);
+        document.getElementById(`tab-${id}`)?.classList.toggle('hidden', id !== tabId);
+      });
+    }
+
+    // merge an incoming normalized record into the catalogue (same paper + label + condition => merge)
+    function mergeOrInsert(rec, baseKey, i) {
+      const existing = catalogue.find(r => dedupeKey(r) === dedupeKey(rec));
+      if (!existing) {
+        rec.id = `EM-${baseKey}-${i + 1}`;
+        rec.added_at = new Date().toISOString();
+        catalogue.unshift(rec);
+        return 'inserted';
+      }
+      // fill gaps, log conflicts, never overwrite a verified value
+      Object.keys(rec.properties).forEach(k => {
+        if (rec.provenance[k]?.type === 'derived') return;   // derived values are recomputed, never compared
+        const incoming = rec.properties[k];
+        const cur = existing.properties[k];
+        if (cur == null) {
+          existing.properties[k] = incoming;
+          existing.provenance[k] = rec.provenance[k];
+        } else if (Math.abs(cur - incoming) > 1e-6 * Math.max(1, Math.abs(cur))) {
+          const dup = existing.cross_references.some(c => c.field === k && c.value === incoming);
+          if (!dup) existing.cross_references.push({ field: k, value: incoming, source_doi: rec.paper.doi, note: 'Different value on re-ingestion' });
+        }
+      });
+      if (!existing.composition.length && rec.composition.length) {
+        existing.composition = rec.composition;
+        existing.provenance.composition = rec.provenance.composition;
+      }
+      if (!isMatchReady(existing) && isMatchReady(rec)) {
+        existing.soil_fractions = rec.soil_fractions;
+        existing.soil_fractions_source = rec.soil_fractions_source;
+        existing.soil_texture_class = rec.soil_texture_class;
+        if (rec.provenance.soil_fractions) existing.provenance.soil_fractions = rec.provenance.soil_fractions;
+      }
+      existing.summary = existing.summary || rec.summary;
+      applyDerived(existing);
+      existing.tags = deriveTags(existing);
+      return 'merged';
+    }
+
+    // ============================================================
+    // FILE HANDLING
+    // ============================================================
+    function handleDragOver(e) { e.preventDefault(); document.getElementById('drop-zone').classList.add('drop-zone--over'); }
+    function handleDragLeave(e) { e.preventDefault(); document.getElementById('drop-zone').classList.remove('drop-zone--over'); }
+    function handleFileDrop(e) {
+      e.preventDefault();
+      document.getElementById('drop-zone').classList.remove('drop-zone--over');
+      [...(e.dataTransfer?.files || [])].forEach(processUploadedFile);
+    }
+    function handleFileSelect(e) { [...(e.target.files || [])].forEach(processUploadedFile); e.target.value = ''; }
+
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result).split(',')[1]);
+        r.onerror = () => reject(new Error('Could not read file'));
+        r.readAsDataURL(file);
+      });
+    }
+
+    const pdfCache = {};   // pdf id -> Promise<pdf.js document>
+    async function storePdf(buf, name) {
+      const res = await api('/api/pdfs', { method: 'POST', headers: { 'Content-Type': 'application/pdf' }, body: buf });
+      const j = await res.json();
+      currentPdf = { id: j.id, name, size: j.size, pages: null, sendWhole: false };
+      return j;
+    }
+
+    async function processUploadedFile(file) {
+      const textBox = document.getElementById('paper-raw-text');
+      updatePdfStatus(`Processing ${file.name}...`, false);
+      try {
+        if (file.type.startsWith('image/')) {
+          currentUploadedImages.push({ mimeType: file.type || 'image/png', data: await fileToBase64(file), name: file.name });
+          updatePdfStatus(`Loaded image: ${file.name}`, true);
+        } else if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) {
+          const buf = await file.arrayBuffer();
+          const pdf = await pdfjsLib.getDocument({ data: buf.slice(0) }).promise;
+          pdfCache[(await storePdf(buf, file.name)).id] = Promise.resolve(pdf);
+          let full = '';
+          for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const tc = await page.getTextContent();
+            full += `--- Page ${i} ---\n` + tc.items.map(it => it.str).join(' ') + '\n\n';
+          }
+          textBox.value = full;
+          const sendWhole = currentPdf.size <= PDF_INLINE_MAX;
+          updatePdfStatus(sendWhole
+            ? `Loaded PDF: ${file.name} (${pdf.numPages} pages, stored, sent whole to Gemini)`
+            : `PDF is over ${Math.round(PDF_INLINE_MAX / 1048576)} MB, so only its text will be sent (the file is still stored for audit): ${file.name}`, true);
+          currentPdf.sendWhole = sendWhole;
+        } else if (file.type === 'text/plain' || /\.txt$/i.test(file.name)) {
+          textBox.value = await file.text();
+          updatePdfStatus(`Loaded TXT: ${file.name}`, true);
+        }
+        updateVisionBanner();
+        renderImageThumbnails();
+      } catch (err) {
+        console.error(err);
+        showNotification(`Error parsing ${file.name}: ${err.message}`);
+        updatePdfStatus('Error parsing uploaded file', false);
+      }
+    }
+
+    function handleGlobalPaste(e) {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf('image') !== -1) {
+          const file = items[i].getAsFile();
+          const reader = new FileReader();
+          reader.onload = (evt) => {
+            currentUploadedImages.push({ mimeType: file.type || 'image/png', data: String(evt.target.result).split(',')[1], name: `Pasted_${Date.now().toString(36)}.png` });
+            updateVisionBanner(); renderImageThumbnails();
+            showNotification('Pasted image attached.');
+          };
+          reader.readAsDataURL(file);
+        }
+      }
+    }
+
+    function renderImageThumbnails() {
+      const c = document.getElementById('image-preview-container');
+      if (!c) return;
+      if (!currentUploadedImages.length) { c.classList.add('hidden'); c.innerHTML = ''; return; }
+      c.classList.remove('hidden');
+      c.innerHTML = currentUploadedImages.map((img, idx) => `
+        <div class="relative border border-slate-300 rounded overflow-hidden bg-white p-1">
+          <img src="data:${img.mimeType};base64,${img.data}" class="h-16 w-20 object-cover rounded" title="${esc(img.name)}">
+          <button onclick="removeImage(${idx})" class="absolute top-1 right-1 bg-rose-600 text-white rounded-full w-4 h-4 text-[10px] font-bold">&#10005;</button>
+        </div>`).join('');
+    }
+    function removeImage(i) { currentUploadedImages.splice(i, 1); renderImageThumbnails(); updateVisionBanner(); }
+
+    function updateVisionBanner() {
+      const banner = document.getElementById('vision-status-banner');
+      const text = document.getElementById('vision-status-text');
+      const badge = document.getElementById('vision-count-badge');
+      if (!banner) return;
+      const imgs = currentUploadedImages.length;
+      const hasText = document.getElementById('paper-raw-text').value.trim().length > 0;
+      if (currentPdf && currentPdf.sendWhole) {
+        banner.className = 'border rounded-md p-2.5 text-xs font-mono flex items-center justify-between bg-emerald-50 border-emerald-300 text-emerald-950';
+        text.innerHTML = `<strong>FULL PDF:</strong> ${esc(currentPdf.name)} goes to Gemini with its figures and tables${imgs ? ` + ${imgs} extra image(s)` : ''}.`;
+        badge.className = 'bg-emerald-200 text-emerald-950 px-2 py-0.5 rounded text-[10px] font-bold';
+        badge.innerText = 'PDF READY';
+      } else if (hasText || imgs) {
+        banner.className = 'border rounded-md p-2.5 text-xs font-mono flex items-center justify-between bg-sky-50 border-sky-300 text-sky-950';
+        text.innerHTML = `<strong>${hasText ? 'TEXT' : ''}${hasText && imgs ? ' + ' : ''}${imgs ? imgs + ' IMAGE(S)' : ''}</strong> loaded. Values that only exist in figures need the PDF or a screenshot.`;
+        badge.className = 'bg-sky-200 text-sky-950 px-2 py-0.5 rounded text-[10px] font-bold';
+        badge.innerText = 'READY';
+      } else {
+        banner.className = 'border rounded-md p-2.5 text-xs font-mono flex items-center justify-between bg-amber-50 border-amber-300 text-amber-900';
+        text.innerText = 'No paper loaded yet.';
+        badge.className = 'bg-amber-200 px-2 py-0.5 rounded text-[10px] font-bold';
+        badge.innerText = 'EMPTY';
+      }
+    }
+
+    function clearUploadedFile() {
+      document.getElementById('paper-raw-text').value = '';
+      currentUploadedImages = []; currentPdf = null;
+      renderImageThumbnails(); updateVisionBanner(); updatePdfStatus(null);
+    }
+    function updatePdfStatus(msg, ok = false) {
+      const el = document.getElementById('file-status-indicator');
+      if (!msg) { el.classList.add('hidden'); return; }
+      el.innerText = msg;
+      el.classList.remove('hidden');
+      el.className = `text-[11px] font-semibold font-mono px-2.5 py-1 rounded border mt-1 ${ok ? 'text-slate-900 bg-slate-200 border-slate-400' : 'text-slate-700 bg-slate-100 border-slate-300'}`;
+    }
+
+    // ============================================================
+    // GEMINI EXTRACTION
+    // ============================================================
+    const EXTRACTION_PROMPT = `You extract earth-based building material records from a research paper for a catalogue.
+The catalogue is used to compare site soils against documented materials (adobe, cob, rammed earth, compressed earth blocks, 3D-printed earth, etc.) and to assess thermal performance of walls. Accuracy matters more than completeness: a null is always better than a guess.
+
+WHAT TO EXTRACT
+One entry per distinct mix design, and per distinct test condition ONLY if the paper reports different property values for it (for example dry vs conditioned at a stated humidity). Do not create entries for materials the paper only mentions in passing or cites from other work, unless the paper is a review: then set data_origin to "cited_from_other_work".
+
+RULES (follow strictly)
+1. NEVER invent or "typical-value" anything. If the paper does not report a value, use null. Do not fill gaps with textbook numbers. Do not produce smooth progressions of numbers across mixes unless the paper reports exactly those numbers.
+2. technique_tags: choose ONLY from this list (one or more): "3d_printed", "cob", "adobe", "rammed_earth", "compressed_earth_block", "cast_earth", "wattle_and_daub", "earthbag", "other". A 3D-printed earth mix gets "3d_printed". If it also clearly follows another technique, add that tag too. Put free-text detail in technique_note.
+3. composition: list EVERY constituent of the mix with its percentage. category must be one of: clay, silt, sand, gravel, fibre, binder, stabilizer, aggregate, water, other. Use the paper's own names in "component" (for example "kaolin", "wheat straw", "hydrated lime") and extra detail (fibre length, mineralogy, particle size) in "detail". basis is "wt_dry" (percent of dry mass), "wt_total" (percent of total mass including water) or "vol". If the paper gives ratios, parts or kg per m3, convert to percentages, set "converted": true and state the original numbers in the evidence quote. If it cannot be converted, set pct to null. If the paper reports water separately as a percent of dry mass, put it in water_content_pct (and you may also list it as a "water" component).
+4. soil_fractions: clay_pct, silt_pct, sand_pct, gravel_pct from the paper's particle-size analysis of the soil or mineral aggregate, as the paper reports them. Do not reclassify with a different size scale. In "note" say what they describe (for example "soil only, before additives"). null if not reported.
+5. properties: only numbers the paper measured or states for that mix. Convert units to those named in the schema and keep the original in the evidence quote when you convert. If the paper gives mean and deviation, use the mean. If it gives only a range, use the midpoint and write "range a-b" in the quote. Values read off a figure: set from_figure true.
+6. evidence: for composition, soil_fractions and EVERY non-null property give { "page": <PDF page number, 1 = first page of the file or the "--- Page N ---" marker in the text>, "quote": "<verbatim text from the paper, at most 30 words, or a table/figure label>", "from_figure": true|false }.
+7. paper-level fields: title, doi (bare DOI starting with "10.", never a URL), year, soil_origin (country or region where the soil came from, if stated).
+8. curing: curing time and conditions as stated. test_conditions: specimen size, moisture or humidity state, standard used, direction of load or print orientation if stated.
+9. print_parameters (only for 3D-printed mixes): nozzle diameter, layer height, printing speed, buildability notes, as stated; otherwise null.
+10. Output JSON only, exactly in this shape:
+{
+  "title": "string", "doi": "10....", "year": number|null, "soil_origin": "string|null",
+  "materials": [
+    {
+      "material_label": "short unique name, e.g. 'Printed earth + 3% straw'",
+      "technique_tags": ["3d_printed"], "technique_note": "string|null",
+      "data_origin": "measured_in_this_paper" | "cited_from_other_work",
+      "soil_fractions": { "clay_pct": n|null, "silt_pct": n|null, "sand_pct": n|null, "gravel_pct": n|null, "note": "string|null" },
+      "composition": [ { "component": "string", "category": "clay|silt|sand|gravel|fibre|binder|stabilizer|aggregate|water|other", "pct": n|null, "basis": "wt_dry|wt_total|vol", "detail": "string|null", "converted": false } ],
+      "water_content_pct": n|null,
+      "curing": "string|null", "test_conditions": "string|null",
+      "print_parameters": { "nozzle_mm": n|null, "layer_height_mm": n|null, "speed_mm_s": n|null, "buildability": "string|null" } | null,
+      "properties": {
+        "dry_density_kg_m3": n|null, "porosity_pct": n|null,
+        "thermal_conductivity_W_mK": n|null, "specific_heat_J_kgK": n|null, "thermal_diffusivity_mm2_s": n|null,
+        "decrement_factor": n|null, "time_lag_h": n|null,
+        "compressive_strength_MPa": n|null, "flexural_strength_MPa": n|null, "tensile_strength_MPa": n|null, "elastic_modulus_MPa": n|null,
+        "shrinkage_pct": n|null, "water_absorption_pct": n|null
+      },
+      "evidence": { "composition": {...}, "soil_fractions": {...}, "<each non-null property key>": { "page": n, "quote": "...", "from_figure": false } },
+      "notes": "anything a reader should know about this entry, or null"
+    }
+  ]
+}`;
+
+    // The browser never talks to Gemini. The server adds the key and the extraction prompt.
+    async function extractOnServer(text, model) {
+      const res = await api('/api/extract', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text, model,
+          pdf_id: currentPdf ? currentPdf.id : null,
+          images: currentUploadedImages.map(i => ({ mimeType: i.mimeType, data: i.data }))
+        })
+      });
+      const j = await res.json();
+      if (j.warnings && j.warnings.length) showNotification(j.warnings.join(' '));
+      return j.result;
+    }
+
+    async function runAIExtraction() {
+      const rawText = document.getElementById('paper-raw-text').value.trim();
+      const provider = document.getElementById('ingestion-llm-provider').value;
+      const tag = document.getElementById('extraction-status-tag');
+      const box = document.getElementById('extraction-results-container');
+      if (!rawText && !currentPdf && !currentUploadedImages.length) { showNotification('Upload a paper, paste text, or paste a table screenshot first.'); return; }
+
+      tag.innerText = 'EXTRACTING...';
+      tag.className = 'text-[11px] font-semibold px-2.5 py-1 rounded-md bg-slate-200 text-slate-900 border border-slate-400 font-mono animate-pulse';
+      box.innerHTML = `<div class="flex-1 border border-slate-200 rounded-lg p-6 bg-slate-50 flex flex-col items-center justify-center text-center space-y-3 font-mono">
+        <div class="w-6 h-6 border-2 border-slate-900 border-t-transparent rounded-full animate-spin"></div>
+        <div id="extraction-progress-label" class="text-xs font-semibold text-slate-800">READING PAPER...</div>
+        <div class="text-[10px] text-slate-500">Composition, technique, soil fractions, thermal and strength values</div></div>`;
+
+      try {
+        const label = document.getElementById('extraction-progress-label');
+        if (label) label.innerText = 'EXTRACTING ON SERVER (can take a minute)...';
+        const raw = await extractOnServer(rawText, provider);
+
+        const list = Array.isArray(raw.materials) ? raw.materials : [];
+        if (!list.length) throw new Error('The model returned no materials. Check that the paper reports earth-material mixes.');
+        const paper = { title: raw.title, doi: raw.doi, year: raw.year, soil_origin: raw.soil_origin };
+        const materials = list.map((m, i) => { const r = normalizeMaterial(m, paper, i); r._include = true;
+          if (currentPdf) { r.paper.pdf_id = currentPdf.id; Object.values(r.provenance).forEach(p => { p.pdf_id = currentPdf.id; }); }
+          return r; });
+        currentExtracted = { paper, materials };
+        renderExtractedPreview();
+
+        tag.innerText = `READY (${materials.length} MATERIALS)`;
+        tag.className = 'text-[11px] font-semibold px-2.5 py-1 rounded-md bg-slate-900 text-white font-mono';
+        const btn = document.getElementById('ingest-commit-btn');
+        btn.disabled = false;
+        btn.className = 'btn btn-primary px-5 py-2 text-xs font-semibold uppercase tracking-wider';
+      } catch (err) {
+        console.error(err);
+        tag.innerText = 'FAILED';
+        tag.className = 'text-[11px] font-semibold px-2.5 py-1 rounded-md bg-rose-100 text-rose-900 border border-rose-300 font-mono';
+        box.innerHTML = `<div class="border border-rose-300 rounded-lg p-4 bg-rose-50 text-rose-900 text-xs font-mono space-y-1">
+          <div class="font-bold">Extraction error</div><p>${esc(err.message || 'Failed to extract.')}</p></div>`;
+      }
+    }
+
+    // ============================================================
+    // PREVIEW / COMMIT
+    // ============================================================
+    function compBarHtml(item) {
+      let segs = (item.composition || []).filter(c => c.pct != null && c.pct > 0).map(c => ({ name: c.component || c.category, cat: c.category, v: c.pct }));
+      if (!segs.length) {
+        const s = item.soil_fractions || {};
+        segs = [['clay', s.clay_pct], ['silt', s.silt_pct], ['sand', s.sand_pct], ['gravel', s.gravel_pct]].filter(x => x[1] != null && x[1] > 0).map(x => ({ name: x[0], cat: x[0], v: x[1] }));
+      }
+      if (!segs.length) return '<div class="text-[10px] text-slate-400">No composition data</div>';
+      const total = segs.reduce((a, s) => a + s.v, 0);
+      return `<div class="cbar">${segs.map(s => `<span style="width:${(s.v / total * 100).toFixed(2)}%;background:${CAT_COLORS[s.cat] || CAT_COLORS.other}" title="${esc(s.name)} ${fmt(s.v, 1)}%"></span>`).join('')}</div>`;
+    }
+
+    function compListHtml(item) {
+      const c = (item.composition || []);
+      if (!c.length) return '';
+      return `<div class="space-y-0.5 mt-1.5">${c.map(x => `
+        <div class="flex items-center justify-between gap-2 text-[10px]">
+          <span class="flex items-center gap-1 min-w-0"><span class="inline-block w-2 h-2 rounded-sm shrink-0" style="background:${CAT_COLORS[x.category] || CAT_COLORS.other}"></span><span class="truncate">${esc(x.component || x.category)}${x.detail ? ` <span class="text-slate-400">(${esc(x.detail)})</span>` : ''}</span></span>
+          <span class="font-bold shrink-0">${x.pct == null ? '?' : fmt(x.pct, 1) + '%'}${x.basis ? ` <span class="text-slate-400 font-normal">${esc(x.basis)}</span>` : ''}</span>
+        </div>`).join('')}</div>`;
+    }
+
+    function tagsHtml(item) {
+      return (item.tags || item.technique_tags || []).map(t => `<span class="tag ${item.technique_tags.includes(t) ? 'tag-tech' : 'tag-derived'}">${esc(TECHNIQUES[t] || t.replace(/_/g, ' '))}</span>`).join(' ');
+    }
+
+    function renderExtractedPreview() {
+      const box = document.getElementById('extraction-results-container');
+      if (!currentExtracted) return;
+      const { paper, materials } = currentExtracted;
+      box.innerHTML = `
+        <div class="border border-slate-200 rounded-lg p-4 bg-slate-50 space-y-3 text-xs font-mono">
+          <div class="font-bold text-slate-900 border-b border-slate-300 pb-2">${esc(paper.title || 'Untitled paper')}</div>
+          <div class="grid grid-cols-3 gap-2 text-[11px] text-slate-600">
+            <div><span class="font-bold text-slate-800">DOI:</span> ${esc(cleanDoi(paper.doi) || 'not found')}</div>
+            <div><span class="font-bold text-slate-800">Year:</span> ${esc(paper.year ?? '-')}</div>
+            <div><span class="font-bold text-slate-800">Soil origin:</span> ${esc(paper.soil_origin || '-')}</div>
+          </div>
+          <div class="text-[10px] text-slate-500 font-sans">Untick anything that is not a real mix from this paper. Every value stays unverified until you check it in the audit view.</div>
+          <div class="space-y-2">${materials.map((m, i) => previewCard(m, i)).join('')}</div>
+        </div>`;
+    }
+
+    function previewCard(m, i) {
+      const P = m.properties;
+      const prop = (k, d = 2) => P[k] != null ? `<strong class="text-slate-900">${fmt(P[k], d)}</strong>` : '<span class="text-slate-300">-</span>';
+      const sf = m.soil_fractions;
+      const missingEvidence = auditKeys(m).filter(k => !m.provenance[k].quote).length;
+      return `
+        <div class="border rounded p-3 bg-white space-y-2 ${m._include ? 'border-slate-300' : 'border-slate-200 opacity-50'}">
+          <div class="flex justify-between items-start gap-2 border-b border-slate-200 pb-1.5">
+            <label class="flex items-start gap-2 cursor-pointer min-w-0">
+              <input type="checkbox" ${m._include ? 'checked' : ''} onchange="togglePreviewInclude(${i}, this.checked)" class="mt-0.5">
+              <span class="font-bold text-slate-900 break-words">${esc(m.material_label)}</span>
+            </label>
+            ${m.data_origin === 'cited_from_other_work' ? '<span class="badge badge-calc shrink-0">CITED</span>' : ''}
+          </div>
+          <div class="flex flex-wrap gap-1">${tagsHtml(m) || '<span class="text-[10px] text-slate-400">no technique tag</span>'}</div>
+          ${compBarHtml(m)}${compListHtml(m)}
+          <div class="grid grid-cols-5 gap-2 text-[10px] bg-slate-50 p-1.5 rounded border border-slate-200">
+            <div>clay ${sf.clay_pct != null ? `<strong>${fmt(sf.clay_pct, 1)}</strong>` : '-'}</div>
+            <div>silt ${sf.silt_pct != null ? `<strong>${fmt(sf.silt_pct, 1)}</strong>` : '-'}</div>
+            <div>sand ${sf.sand_pct != null ? `<strong>${fmt(sf.sand_pct, 1)}</strong>` : '-'}</div>
+            <div>gravel ${sf.gravel_pct != null ? `<strong>${fmt(sf.gravel_pct, 1)}</strong>` : '-'}</div>
+            <div class="text-right">${m.soil_texture_class ? `<span class="tag">${esc(m.soil_texture_class)}</span>` : '<span class="text-slate-300">no class</span>'}</div>
+          </div>
+          ${m.soil_fractions_source === 'computed_from_composition' ? '<div class="text-[10px] text-amber-700">Soil fractions were computed from the composition list.</div>' : ''}
+          <div class="grid grid-cols-4 gap-2 text-[10px] font-mono">
+            <div><span class="text-slate-500">\u03C1</span> ${prop('dry_density_kg_m3', 0)}</div>
+            <div><span class="text-slate-500">\u03BB</span> ${prop('thermal_conductivity_W_mK', 3)}</div>
+            <div><span class="text-slate-500">cp</span> ${prop('specific_heat_J_kgK', 0)}</div>
+            <div><span class="text-slate-500">Cv</span> ${prop('volumetric_heat_capacity_MJ_m3K', 3)}</div>
+            <div><span class="text-slate-500">fc</span> ${prop('compressive_strength_MPa')}</div>
+            <div><span class="text-slate-500">ff</span> ${prop('flexural_strength_MPa')}</div>
+            <div><span class="text-slate-500">ft</span> ${prop('tensile_strength_MPa')}</div>
+            <div><span class="text-slate-500">E</span> ${prop('elastic_modulus_MPa', 0)}</div>
+          </div>
+          ${m.flags.length ? `<div class="text-[10px] text-rose-700 space-y-0.5">${m.flags.map(f => `<div>\u26A0 ${esc(f)}</div>`).join('')}</div>` : ''}
+          ${missingEvidence ? `<div class="text-[10px] text-amber-700">${missingEvidence} value(s) came without a source quote.</div>` : ''}
+        </div>`;
+    }
+
+    function togglePreviewInclude(i, v) { currentExtracted.materials[i]._include = v; renderExtractedPreview(); }
+
+    function clearExtraction() {
+      currentExtracted = null;
+      document.getElementById('extraction-results-container').innerHTML = `
+        <div class="flex-1 border border-dashed border-slate-300 rounded-lg p-6 bg-slate-50 flex items-center justify-center text-center text-slate-400 text-xs">
+          <div><p class="font-semibold text-slate-600 mb-1">NOTHING EXTRACTED YET</p>
+          <p class="text-[11px]">Load a paper, then click "Extract materials".</p></div></div>`;
+      const tag = document.getElementById('extraction-status-tag');
+      tag.innerText = 'AWAITING INPUT';
+      tag.className = 'text-[11px] font-semibold px-2.5 py-1 rounded-md bg-slate-100 text-slate-600 font-mono';
+      const btn = document.getElementById('ingest-commit-btn');
+      btn.disabled = true;
+      btn.className = 'btn border border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed px-5 py-2 text-xs font-semibold uppercase tracking-wider';
+    }
+
+    function commitExtraction() {
+      if (!currentExtracted) return;
+      const chosen = currentExtracted.materials.filter(m => m._include);
+      if (!chosen.length) { showNotification('Nothing selected.'); return; }
+      const baseKey = Date.now().toString(36).toUpperCase();
+      let added = 0, merged = 0;
+      chosen.forEach((m, i) => {
+        const rec = JSON.parse(JSON.stringify(m));
+        delete rec._include;
+        mergeOrInsert(rec, baseKey, i) === 'inserted' ? added++ : merged++;
+      });
+      saveState();
+      showNotification(`${added} added, ${merged} merged into existing records.`);
+      clearExtraction();
+      switchTab('catalogue');
+    }
+
+    // ============================================================
+    // CATALOGUE TABLE
+    // ============================================================
+    function populateTechniqueFilter() {
+      const sel = document.getElementById('filter-technique');
+      sel.innerHTML = '<option value="">All techniques</option>' +
+        Object.entries(TECHNIQUES).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('') +
+        '<option value="fibre_reinforced">Fibre reinforced</option><option value="unstabilised">Unstabilised</option><option value="stabilised">Stabilised (any)</option>';
+    }
+    function clearFilters() {
+      ['search-input', 'filter-technique', 'filter-data', 'filter-verify'].forEach(id => { document.getElementById(id).value = ''; });
+      renderTable();
+    }
+    function clearAllData() {
+      if (!catalogue.length) return;
+      if (!confirm(`Delete all ${catalogue.length} records? The server keeps a backup copy in data/backups/.`)) return;
+      catalogue = []; saveState(); showNotification('Catalogue cleared.');
+    }
+
+    function renderStats() {
+      const n = catalogue.length;
+      const cells = [
+        ['Materials', n, ''],
+        ['Match-ready', catalogue.filter(isMatchReady).length, 'clay + silt + sand known'],
+        ['With thermal data', catalogue.filter(hasThermal).length, '\u03BB or cp reported'],
+        ['Fully verified', catalogue.filter(isFullyVerified).length, 'every reported value signed off']
+      ];
+      document.getElementById('stats-row').innerHTML = cells.map(c => `
+        <div class="border border-slate-200 rounded-lg p-3 bg-white shadow-sm">
+          <div class="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">${c[0]}</div>
+          <div class="text-xl font-bold text-slate-900">${c[1]}</div>
+          <div class="text-[10px] text-slate-400">${c[2]}</div>
+        </div>`).join('');
+    }
+
+    function renderTable() {
+      renderStats();
+      const tbody = document.getElementById('catalogue-tbody');
+      if (!tbody) return;
+      const q = (document.getElementById('search-input').value || '').toLowerCase().trim();
+      const ft = document.getElementById('filter-technique').value;
+      const fd = document.getElementById('filter-data').value;
+      const fv = document.getElementById('filter-verify').value;
+
+      const rows = catalogue.filter(it => {
+        if (ft) {
+          if (ft === 'stabilised') { if (!(it.tags || []).some(t => t.startsWith('stabilised'))) return false; }
+          else if (!(it.tags || []).includes(ft)) return false;
+        }
+        if (fd === 'match' && !isMatchReady(it)) return false;
+        if (fd === 'composition' && !(it.composition || []).length) return false;
+        if (fd === 'thermal' && !hasThermal(it)) return false;
+        if (fd === 'strength' && !hasStrength(it)) return false;
+        if (fv === 'verified' && !isFullyVerified(it)) return false;
+        if (fv === 'unverified' && isFullyVerified(it)) return false;
+        if (fv === 'flagged' && !(it.flags || []).length) return false;
+        if (!q) return true;
+        const hay = `${it.id} ${it.material_label} ${it.paper?.doi} ${it.paper?.title} ${(it.tags || []).join(' ')} ${it.soil_texture_class || ''}`.toLowerCase();
+        return hay.includes(q);
+      });
+
+      if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="6" class="p-12 text-center text-slate-500 font-mono">${catalogue.length ? 'No records match these filters.' : 'The catalogue is empty. Use Paper Ingestion to add materials from a paper.'}</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = rows.map(it => {
+        const comp = getCompleted(it), P = comp.P, sf = it.soil_fractions || {};
+        const vr = verifiedRatio(it);
+        const full = isFullyVerified(it);
+        const badge = k => {
+          const b = comp.basis[k]; if (!b || P[k] == null) return '';
+          const t = comp.notes[k] ? ` title="${esc(comp.notes[k])}"` : '';
+          return b === 'derived' ? `<span class="badge badge-calc"${t}>CALC</span>`
+               : b === 'estimated' ? `<span class="badge badge-est"${t}>EST</span>`
+               : b === 'manual' ? '<span class="badge badge-man">MAN</span>'
+               : '<span class="badge badge-rep">REP</span>';
+        };
+        const line = (label, k, d, unit) => {
+          const est = comp.basis[k] === 'estimated';
+          return `<div class="flex items-center gap-1.5">${label}: <strong class="${est ? 'text-slate-500 italic' : 'text-slate-900'}">${P[k] != null ? (est ? '~' : '') + fmt(P[k], d) + ' ' + unit : '-'}</strong> ${badge(k)}</div>`;
+        };
+        return `
+          <tr class="hover:bg-slate-50/80 border-b border-slate-200 align-top">
+            <td class="p-3 border-r border-slate-200">
+              <div class="font-bold text-slate-900 text-xs">${esc(it.material_label)}</div>
+              <div class="text-[10px] font-mono text-slate-500 mb-1.5">${esc(it.id)}${it.data_origin === 'cited_from_other_work' ? ' &bull; cited' : ''}</div>
+              <div class="flex flex-wrap gap-1">${tagsHtml(it)}</div>
+            </td>
+            <td class="p-3 border-r border-slate-200">
+              ${compBarHtml(it)}
+              <div class="text-[10px] font-mono mt-1.5 text-slate-600">
+                ${isMatchReady(it) ? `clay ${fmt(sf.clay_pct, 0)} / silt ${fmt(sf.silt_pct, 0)} / sand ${fmt(sf.sand_pct, 0)}${sf.gravel_pct != null ? ` / gravel ${fmt(sf.gravel_pct, 0)}` : ''}` : '<span class="text-slate-400">soil fractions incomplete</span>'}
+              </div>
+              <div class="mt-1 flex flex-wrap gap-1">
+                ${it.soil_texture_class ? `<span class="tag">${esc(it.soil_texture_class)}</span>` : ''}
+                ${it.soil_fractions_source === 'computed_from_composition' ? '<span class="badge badge-calc">COMPUTED</span>' : ''}
+                ${it.summary?.fibre_pct != null ? `<span class="badge badge-rep">fibre ${fmt(it.summary.fibre_pct, 1)}%</span>` : ''}
+                ${it.summary?.stabilizer_pct != null ? `<span class="badge badge-rep">stab. ${fmt(it.summary.stabilizer_pct, 1)}%</span>` : ''}
+              </div>
+            </td>
+            <td class="p-3 border-r border-slate-200 text-[10px] font-mono space-y-0.5">
+              ${line('\u03BB', 'thermal_conductivity_W_mK', 3, 'W/mK')}
+              ${line('cp', 'specific_heat_J_kgK', 0, 'J/kgK')}
+              ${line('\u03C1', 'dry_density_kg_m3', 0, 'kg/m\u00B3')}
+              ${line('Cv', 'volumetric_heat_capacity_MJ_m3K', 3, 'MJ/m\u00B3K')}
+              ${line('\u03B1', 'thermal_diffusivity_mm2_s', 3, 'mm\u00B2/s')}
+              ${line('n', 'porosity_pct', 1, '%')}
+              ${P.decrement_factor != null || P.time_lag_h != null ? `<div>decr. ${fmt(P.decrement_factor, 2)} / lag ${fmt(P.time_lag_h, 1)} h</div>` : ''}
+            </td>
+            <td class="p-3 border-r border-slate-200 text-[10px] font-mono space-y-0.5">
+              ${line('fc', 'compressive_strength_MPa', 2, 'MPa')}
+              ${line('ff', 'flexural_strength_MPa', 2, 'MPa')}
+              ${line('ft', 'tensile_strength_MPa', 2, 'MPa')}
+              ${line('E', 'elastic_modulus_MPa', 0, 'MPa')}
+            </td>
+            <td class="p-3 border-r border-slate-200 text-[10px] font-mono">
+              <div class="text-slate-600 break-all">${esc(it.paper?.doi || 'no DOI')}</div>
+              <div class="text-slate-400 truncate max-w-[200px]" title="${esc(it.paper?.title)}">${esc(it.paper?.title || '')}</div>
+              <div class="mt-1.5 flex flex-wrap gap-1">
+                <span class="badge ${full ? 'badge-ok' : 'badge-pend'}">${vr.verified}/${vr.total} verified</span>
+                ${(it.flags || []).length ? `<span class="badge badge-warn" title="${esc(it.flags.join('; '))}">${it.flags.length} flag(s)</span>` : ''}
+                ${(it.cross_references || []).length ? `<span class="badge badge-man">+${it.cross_references.length} conflicting</span>` : ''}
+              </div>
+            </td>
+            <td class="p-3 text-center space-y-1">
+              <button onclick="openAuditModal('${it.id}')" class="btn btn-accent w-full text-[10px] font-bold px-2 py-1 uppercase tracking-wider">Audit</button>
+              <button onclick="openSpecModal('${it.id}')" class="btn btn-secondary w-full text-[9px] font-semibold px-1 py-0.5 uppercase">Sheet</button>
+              <button onclick="deleteRecord('${it.id}')" class="btn btn-secondary w-full text-[9px] font-semibold px-1 py-0.5 uppercase text-rose-700">Delete</button>
+            </td>
+          </tr>`;
+      }).join('');
+    }
+
+    function deleteRecord(id) {
+      const it = catalogue.find(r => r.id === id);
+      if (!it || !confirm(`Delete "${it.material_label}"?`)) return;
+      catalogue = catalogue.filter(r => r.id !== id);
+      saveState(); closeSpecModal();
+    }
+
+    // ============================================================
+    // AUDIT MODAL
+    // ============================================================
+    function auditLabel(k) { return k === 'composition' ? 'Composition' : k === 'soil_fractions' ? 'Soil fractions' : (PROP_BY_KEY[k]?.label || k); }
+    function auditValueText(item, k) {
+      if (k === 'composition') return (item.composition || []).map(c => `${c.component || c.category}: ${c.pct == null ? '?' : c.pct + '%'}`).join('; ') || '-';
+      if (k === 'soil_fractions') { const s = item.soil_fractions; return `clay ${fmt(s.clay_pct, 1)} / silt ${fmt(s.silt_pct, 1)} / sand ${fmt(s.sand_pct, 1)} / gravel ${fmt(s.gravel_pct, 1)} %`; }
+      const p = PROP_BY_KEY[k];
+      return item.properties[k] != null ? `${item.properties[k]} ${p?.unit || ''}` : 'Unreported';
+    }
+
+    function openAuditModal(id, key) {
+      const item = catalogue.find(r => r.id === id);
+      if (!item) return;
+      const keys = Object.keys(item.provenance || {});
+      if (!keys.length) { showNotification('This record has no values to audit.'); return; }
+      activeAuditId = id;
+      activeAuditKey = key && keys.includes(key) ? key : (keys.find(k => item.provenance[k].type !== 'derived') || keys[0]);
+      document.getElementById('audit-modal-title').innerText = `AUDIT // ${item.material_label}`;
+      document.getElementById('audit-modal-footer-id').innerText = `${item.id} | ${item.paper?.doi || 'no DOI'}`;
+      document.getElementById('audit-sheet-modal').classList.remove('hidden');
+      renderAuditTabs(item);
+      loadAuditDetails(item, activeAuditKey);
+    }
+    function closeAuditModal() { document.getElementById('audit-sheet-modal').classList.add('hidden'); activeAuditId = null; }
+
+    function renderAuditTabs(item) {
+      const keys = Object.keys(item.provenance);
+      document.getElementById('audit-property-tabs').innerHTML = keys.map(k => {
+        const sel = k === activeAuditKey, ver = item.provenance[k].verified, der = item.provenance[k].type === 'derived';
+        return `<button onclick="selectAuditKey('${k}')" class="px-2.5 py-1 rounded text-xs font-mono font-semibold flex items-center gap-1.5 ${sel ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}">
+          <span>${esc(auditLabel(k))}</span><span class="${der ? 'w-2 h-2 rounded-full bg-slate-300' : ver ? 'w-2 h-2 rounded-full bg-emerald-400' : 'w-2 h-2 rounded-full bg-amber-400'}"></span></button>`;
+      }).join('');
+      const r = verifiedRatio(item);
+      document.getElementById('audit-specimen-progress-tag').innerText = `${r.verified}/${r.total} verified`;
+    }
+    function selectAuditKey(k) {
+      const item = catalogue.find(r => r.id === activeAuditId);
+      if (!item) return;
+      activeAuditKey = k; renderAuditTabs(item); loadAuditDetails(item, k);
+    }
+
+    async function loadAuditDetails(item, k) {
+      const prov = item.provenance[k] || {};
+      document.getElementById('audit-prop-display-name').innerText = auditLabel(k);
+      const badge = document.getElementById('audit-prop-type-badge');
+      badge.innerText = (prov.type || 'reported').toUpperCase();
+      badge.className = 'badge ' + (prov.type === 'derived' ? 'badge-calc' : prov.type === 'manual' ? 'badge-man' : 'badge-rep');
+      document.getElementById('audit-active-val').innerText = auditValueText(item, k);
+      const pill = document.getElementById('audit-status-pill');
+      if (prov.type === 'derived') { pill.className = 'badge badge-calc'; pill.innerText = 'DERIVED (not audited)'; }
+      else if (prov.verified) { pill.className = 'badge badge-ok'; pill.innerText = `VERIFIED BY ${prov.verified_by || '-'} (${(prov.verified_date || '').split('T')[0]})`; }
+      else { pill.className = 'badge badge-pend'; pill.innerText = 'PENDING AUDIT'; }
+      document.getElementById('audit-page-tag').innerText = `Page: ${prov.page ?? '-'}${prov.from_figure ? ' (read from figure)' : ''}`;
+      document.getElementById('audit-quote-box').innerText = prov.quote || 'No quote recorded.';
+      document.getElementById('audit-override-input').value = '';
+      document.getElementById('audit-note-input').value = prov.audit_note || '';
+      document.getElementById('audit-override-block').classList.toggle('hidden', !PROP_BY_KEY[k] || prov.type === 'derived');
+      await renderAuditPage(prov.page || 1);
+    }
+
+    function auditPdfId() {
+      const item = catalogue.find(r => r.id === activeAuditId);
+      return item?.provenance?.[activeAuditKey]?.pdf_id || item?.paper?.pdf_id || null;
+    }
+    async function getPdfDoc(id) {
+      if (!id) return null;
+      if (!pdfCache[id]) pdfCache[id] = pdfjsLib.getDocument({ url: `/api/pdfs/${id}` }).promise;
+      try { return await pdfCache[id]; } catch (e) { delete pdfCache[id]; return null; }
+    }
+    async function renderAuditPage(n) {
+      const canvas = document.getElementById('audit-pdf-canvas');
+      const fb = document.getElementById('audit-canvas-fallback');
+      const st = document.getElementById('audit-pdf-status');
+      const id = auditPdfId();
+      const doc = await getPdfDoc(id);
+      if (!doc) { canvas.classList.add('hidden'); fb.classList.remove('hidden'); st.innerText = id ? 'Stored PDF could not be opened' : 'No PDF stored for this record'; return; }
+      try {
+        const pageNo = Math.min(Math.max(1, n), doc.numPages);
+        canvas.classList.remove('hidden'); fb.classList.add('hidden');
+        const page = await doc.getPage(pageNo);
+        const vp = page.getViewport({ scale: 1.15 });
+        if (renderAuditPage._task) { try { renderAuditPage._task.cancel(); } catch (e) {} }
+        canvas.width = vp.width; canvas.height = vp.height;
+        const task = page.render({ canvasContext: canvas.getContext('2d'), viewport: vp });
+        renderAuditPage._task = task;
+        await task.promise;
+        st.innerText = `Page ${pageNo} of ${doc.numPages}`;
+      } catch (e) {
+        if (e && e.name === 'RenderingCancelledException') return;
+        canvas.classList.add('hidden'); fb.classList.remove('hidden');
+      }
+    }
+    function jumpToAuditPdfPage() {
+      const item = catalogue.find(r => r.id === activeAuditId);
+      if (item) renderAuditPage(item.provenance[activeAuditKey]?.page || 1);
+    }
+
+    function toggleVerifyProperty(v) {
+      const item = catalogue.find(r => r.id === activeAuditId);
+      const prov = item?.provenance[activeAuditKey];
+      if (!prov || prov.type === 'derived') return;
+      prov.verified = v;
+      prov.verified_by = v ? (localStorage.getItem(VERIFIER_STORAGE) || 'unnamed verifier') : null;
+      prov.verified_date = v ? new Date().toISOString() : null;
+      prov.audit_note = document.getElementById('audit-note-input').value.trim();
+      saveState(); renderAuditTabs(item); loadAuditDetails(item, activeAuditKey);
+    }
+
+    function applyAuditOverride() {
+      const item = catalogue.find(r => r.id === activeAuditId);
+      if (!item || !PROP_BY_KEY[activeAuditKey]) return;
+      const v = num(document.getElementById('audit-override-input').value);
+      if (v == null) { showNotification('Enter a valid number.'); return; }
+      item.properties[activeAuditKey] = v;
+      const prov = item.provenance[activeAuditKey];
+      prov.verified = true; prov.verified_by = (localStorage.getItem(VERIFIER_STORAGE) || 'unnamed verifier') + ' (override)';
+      prov.verified_date = new Date().toISOString();
+      prov.audit_note = document.getElementById('audit-note-input').value.trim() || 'Corrected by hand against the source';
+      applyDerived(item);   // recompute derived thermal values from the corrected number
+      saveState(); renderAuditTabs(item); loadAuditDetails(item, activeAuditKey);
+      showNotification(`Set ${auditLabel(activeAuditKey)} to ${v} and recomputed derived values.`);
+    }
+
+    // ============================================================
+    // MATERIAL SHEET
+    // ============================================================
+    function openSpecModal(id) {
+      const it = catalogue.find(r => r.id === id);
+      if (!it) return;
+      document.getElementById('modal-spec-title').innerText = it.material_label;
+      const comp = getCompleted(it);
+      const typeName = { reported: 'extracted', manual: 'extracted (manual)', derived: 'computed', estimated: 'estimated' };
+      const rows = Object.keys(comp.P).map(k => {
+        const p = it.provenance[k] || {}, b = comp.basis[k] || 'reported', n = comp.notes[k];
+        const filled = b === 'estimated' || (b === 'derived' && !it.provenance[k]);
+        return `<tr class="border-b border-slate-100 ${b === 'estimated' ? 'bg-violet-50/50' : ''}"><td class="p-1.5">${esc(auditLabel(k))}</td><td class="p-1.5 font-bold ${b === 'estimated' ? 'italic text-slate-500' : ''}">${b === 'estimated' ? '~' : ''}${comp.P[k]} ${esc(PROP_BY_KEY[k]?.unit || '')}</td>
+          <td class="p-1.5">${esc(typeName[b] || b)}${n ? `<div class="text-[10px] text-slate-500 font-normal">${esc(n)}</div>` : ''}</td><td class="p-1.5">${filled ? '-' : (p.page ?? '-')}</td><td class="p-1.5">${p.verified ? '\u2713' : '-'}</td></tr>`;
+      }).join('');
+      document.getElementById('modal-spec-body').innerHTML = `
+        <div class="flex flex-wrap gap-1">${tagsHtml(it)}</div>
+        <div>${compBarHtml(it)}${compListHtml(it)}</div>
+        <div class="grid grid-cols-2 gap-2">
+          <div><span class="text-slate-500">Texture class:</span> <strong>${esc(it.soil_texture_class || '-')}</strong></div>
+          <div><span class="text-slate-500">Soil fractions from:</span> ${esc(it.soil_fractions_source || '-')}</div>
+          <div><span class="text-slate-500">Curing:</span> ${esc(it.curing || '-')}</div>
+          <div><span class="text-slate-500">Test conditions:</span> ${esc(it.test_conditions || '-')}</div>
+          <div class="col-span-2"><span class="text-slate-500">Soil origin:</span> ${esc(it.paper?.soil_origin || '-')}</div>
+          ${it.soil_fractions_note ? `<div class="col-span-2"><span class="text-slate-500">Soil fractions describe:</span> ${esc(it.soil_fractions_note)}</div>` : ''}
+          ${it.technique_note ? `<div class="col-span-2"><span class="text-slate-500">Technique note:</span> ${esc(it.technique_note)}</div>` : ''}
+          ${it.notes ? `<div class="col-span-2"><span class="text-slate-500">Notes:</span> ${esc(it.notes)}</div>` : ''}
+        </div>
+        ${it.print_parameters ? `<div><div class="font-bold mb-1">Print parameters</div><pre class="bg-slate-50 p-2 rounded border border-slate-200 whitespace-pre-wrap">${esc(JSON.stringify(it.print_parameters, null, 1))}</pre></div>` : ''}
+        <table class="w-full text-[11px]"><thead><tr class="bg-slate-100 text-left"><th class="p-1.5">Property</th><th class="p-1.5">Value</th><th class="p-1.5">Type</th><th class="p-1.5">Page</th><th class="p-1.5">Verified</th></tr></thead><tbody>${rows}</tbody></table>
+        ${(it.cross_references || []).length ? `<div><div class="font-bold mb-1">Conflicting values on re-ingestion</div>${it.cross_references.map(c => `<div>${esc(c.field)}: ${esc(c.value)} (${esc(c.source_doi || '')})</div>`).join('')}</div>` : ''}
+        ${(it.flags || []).length ? `<div class="text-rose-700"><div class="font-bold mb-1">Flags</div>${it.flags.map(f => `<div>\u26A0 ${esc(f)}</div>`).join('')}</div>` : ''}
+        <div><div class="font-bold mb-1">What Grasshopper receives</div><pre class="bg-slate-50 p-2 rounded border border-slate-200 whitespace-pre-wrap max-h-60 overflow-auto">${esc(JSON.stringify(buildExportRecord(it), null, 1))}</pre></div>`;
+      document.getElementById('spec-sheet-modal').classList.remove('hidden');
+    }
+    function closeSpecModal() { document.getElementById('spec-sheet-modal').classList.add('hidden'); }
+
+    // ============================================================
+    // MANUAL ENTRY
+    // ============================================================
+    function initManualForm() {
+      document.getElementById('m-tech').innerHTML = Object.entries(TECHNIQUES).map(([k, v]) =>
+        `<label class="flex items-center gap-1.5"><input type="checkbox" value="${k}" class="m-tech-cb"> ${esc(v)}</label>`).join('');
+      document.getElementById('m-soil').innerHTML = SOIL_KEYS.map(k =>
+        `<label class="block"><span class="text-slate-600">${k.replace('_pct', '')}</span><input type="number" step="any" id="m-${k}" class="mt-1 w-full border border-slate-300 rounded p-2 font-mono"></label>`).join('');
+      document.getElementById('m-props').innerHTML = PROPS.filter(p => !p.derivedOnly).map(p =>
+        `<label class="block"><span class="text-slate-600">${esc(p.label)} <span class="text-slate-400">[${esc(p.unit)}]</span></span><input type="number" step="any" id="mp-${p.key}" class="mt-1 w-full border border-slate-300 rounded p-2 font-mono"></label>`).join('');
+      document.getElementById('m-comp').innerHTML = '';
+      addCompRow(); addCompRow();
+    }
+    function addCompRow() {
+      const div = document.createElement('div');
+      div.className = 'grid grid-cols-12 gap-2 items-center m-comp-row';
+      div.innerHTML = `
+        <input class="col-span-4 border border-slate-300 rounded p-1.5 font-mono mc-name" placeholder="component (e.g. wheat straw)">
+        <select class="col-span-3 border border-slate-300 rounded p-1.5 font-mono mc-cat">${CATEGORIES.map(c => `<option>${c}</option>`).join('')}</select>
+        <input type="number" step="any" class="col-span-2 border border-slate-300 rounded p-1.5 font-mono mc-pct" placeholder="%">
+        <select class="col-span-2 border border-slate-300 rounded p-1.5 font-mono mc-basis"><option value="wt_dry">wt dry</option><option value="wt_total">wt total</option><option value="vol">vol</option></select>
+        <button type="button" onclick="this.parentElement.remove()" class="col-span-1 text-rose-600 font-bold">&#10005;</button>`;
+      document.getElementById('m-comp').appendChild(div);
+    }
+    function resetManualForm() { document.querySelector('#tab-manual form').reset(); initManualForm(); }
+
+    function handleManualSubmit(e) {
+      e.preventDefault();
+      const raw = {
+        _manual: true,
+        material_label: document.getElementById('m-label').value,
+        technique_tags: [...document.querySelectorAll('.m-tech-cb:checked')].map(c => c.value),
+        soil_fractions: Object.fromEntries(SOIL_KEYS.map(k => [k, document.getElementById(`m-${k}`).value])),
+        composition: [...document.querySelectorAll('.m-comp-row')].map(r => ({
+          component: r.querySelector('.mc-name').value, category: r.querySelector('.mc-cat').value,
+          pct: r.querySelector('.mc-pct').value, basis: r.querySelector('.mc-basis').value
+        })).filter(c => c.component || c.pct !== ''),
+        properties: Object.fromEntries(PROPS.filter(p => !p.derivedOnly).map(p => [p.key, document.getElementById(`mp-${p.key}`).value]))
+      };
+      const paper = { title: document.getElementById('m-title').value, doi: document.getElementById('m-doi').value };
+      const rec = normalizeMaterial(raw, paper, 0);
+      mergeOrInsert(rec, Date.now().toString(36).toUpperCase(), 0);
+      saveState(); resetManualForm(); switchTab('catalogue');
+      showNotification(`Added "${rec.material_label}" (unverified).`);
+    }
+
+    // ============================================================
+    // EXPORTS
+    // ============================================================
+    // This is the contract the Grasshopper component will read.
+    // ============================================================
+    // COMPLETING MISSING PROPERTIES (export only, nothing is written back into the records)
+    //   reported / manual : read from the paper (or typed by you)
+    //   derived           : exact physics identity from other values, e.g. vhc = density x specific heat
+    //   estimated         : statistical estimate calibrated on THIS catalogue, never from invented constants
+    //                       (except porosity, which uses an assumed particle density, stated in its note)
+    // Every filled value carries a note saying how it was obtained.
+    // ============================================================
+    const EST_PARTICLE_DENSITY = 2650;   // kg/m3, assumption for the porosity estimate
+    const EXTRACTED = ['reported', 'manual'];
+
+    let completeCache = new WeakMap();   // cleared on every change (saveState)
+    function getCompleted(it) {
+      let c = completeCache.get(it);
+      if (!c) { c = completeProperties(it); completeCache.set(it, c); }
+      return c;
+    }
+
+    function completeProperties(it) {
+      const P = { ...it.properties };
+      const basis = {}, notes = {};
+      Object.keys(P).forEach(k => {
+        basis[k] = it.provenance?.[k]?.type || 'reported';
+        if (basis[k] === 'derived') notes[k] = it.provenance[k].quote || 'Derived from other values';
+      });
+      const isExt = k => P[k] != null && EXTRACTED.includes(basis[k]);
+      const inRange = (k, v) => { const r = PROP_BY_KEY[k]?.range; return !r || (v >= r[0] && v <= r[1]); };
+      const median = a => { const b = [...a].sort((x, y) => x - y), m = b.length >> 1; return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; };
+      const techs = new Set(it.technique_tags || []);
+
+      // calibration pool: other records that have ALL the given properties extracted (not computed or estimated)
+      function pool(keys, minSame, minAll) {
+        const ok = r => r !== it && keys.every(k => {
+          const v = r.properties?.[k], t = r.provenance?.[k]?.type;
+          return v != null && v > 0 && EXTRACTED.includes(t);
+        });
+        const all = catalogue.filter(ok);
+        const same = all.filter(r => (r.technique_tags || []).some(t => techs.has(t)));
+        if (same.length >= minSame) return { recs: same, label: 'same method' };
+        if (all.length >= minAll) return { recs: all, label: 'all methods' };
+        return null;
+      }
+      const put = (k, v, kind, note) => { P[k] = v; basis[k] = kind; notes[k] = note; };
+
+      // exact identities among density, specific heat, conductivity, diffusivity, volumetric heat capacity
+      function identities() {
+        let changed = false;
+        const D = 'dry_density_kg_m3', C = 'specific_heat_J_kgK', K = 'thermal_conductivity_W_mK',
+              A = 'thermal_diffusivity_mm2_s', V = 'volumetric_heat_capacity_MJ_m3K';
+        const rules = [
+          [V, [D, C], (d, c) => d * c / 1e6, 3, 'density x specific heat / 1e6'],
+          [A, [K, V], (k, v) => k / v, 4, 'conductivity / volumetric heat capacity'],
+          [K, [A, V], (a, v) => a * v, 3, 'diffusivity x volumetric heat capacity'],
+          [V, [K, A], (k, a) => k / a, 3, 'conductivity / diffusivity'],
+          [C, [V, D], (v, d) => v * 1e6 / d, 0, 'volumetric heat capacity x 1e6 / density'],
+          [D, [V, C], (v, c) => v * 1e6 / c, 0, 'volumetric heat capacity x 1e6 / specific heat']
+        ];
+        rules.forEach(([out, ins, f, dp, text]) => {
+          if (P[out] != null || ins.some(k => P[k] == null)) return;
+          const val = round(f(...ins.map(k => P[k])), dp);
+          if (!(val > 0) || !inRange(out, val)) return;
+          const est = ins.some(k => basis[k] === 'estimated');
+          put(out, val, est ? 'estimated' : 'derived',
+              (est ? 'Estimated (uses an estimated input): ' : 'Computed: ') + text);
+          changed = true;
+        });
+        return changed;
+      }
+      for (let i = 0; i < 3 && identities(); i++) {}
+
+      // ratio estimates: target = predictor x median(target / predictor) over the catalogue
+      [['flexural_strength_MPa', 'compressive_strength_MPa'], ['tensile_strength_MPa', 'compressive_strength_MPa'],
+       ['elastic_modulus_MPa', 'compressive_strength_MPa']].forEach(([y, x]) => {
+        if (P[y] != null || !isExt(x)) return;
+        const pl = pool([x, y], 3, 5); if (!pl) return;
+        const r = pl.recs.map(q => q.properties[y] / q.properties[x]);
+        const m = median(r), v = round(P[x] * m, 3);
+        if (!(v > 0) || !inRange(y, v)) return;
+        put(y, v, 'estimated', `Estimated: ${x} x median(${y} / ${x}) = ${round(m, 3)} from ${r.length} records (${pl.label}), ratio range ${round(Math.min(...r), 3)} to ${round(Math.max(...r), 3)}`);
+      });
+
+      // specific heat: median of the catalogue (it varies little between mineral earth materials)
+      if (P.specific_heat_J_kgK == null) {
+        const pl = pool(['specific_heat_J_kgK'], 3, 5);
+        if (pl) {
+          const c = pl.recs.map(q => q.properties.specific_heat_J_kgK), v = round(median(c), 0);
+          if (inRange('specific_heat_J_kgK', v)) put('specific_heat_J_kgK', v, 'estimated',
+            `Estimated: median specific heat of ${c.length} records (${pl.label}), range ${Math.min(...c)} to ${Math.max(...c)}`);
+        }
+      }
+
+      // conductivity from density: power law fitted on this catalogue, only inside the density range it was fitted on
+      if (P.thermal_conductivity_W_mK == null && isExt('dry_density_kg_m3')) {
+        const pl = pool(['dry_density_kg_m3', 'thermal_conductivity_W_mK'], 5, 8);
+        if (pl) {
+          const X = pl.recs.map(q => Math.log(q.properties.dry_density_kg_m3));
+          const Y = pl.recs.map(q => Math.log(q.properties.thermal_conductivity_W_mK));
+          const n = X.length, mx = X.reduce((a, b) => a + b) / n, my = Y.reduce((a, b) => a + b) / n;
+          let sxx = 0, syy = 0, sxy = 0;
+          for (let i = 0; i < n; i++) { sxx += (X[i] - mx) ** 2; syy += (Y[i] - my) ** 2; sxy += (X[i] - mx) * (Y[i] - my); }
+          const r2 = sxx > 0 && syy > 0 ? (sxy * sxy) / (sxx * syy) : 0;
+          const dens = pl.recs.map(q => q.properties.dry_density_kg_m3), rho = P.dry_density_kg_m3;
+          if (r2 >= 0.5 && rho >= Math.min(...dens) && rho <= Math.max(...dens)) {
+            const b = sxy / sxx, a = my - b * mx, v = round(Math.exp(a + b * Math.log(rho)), 3);
+            if (inRange('thermal_conductivity_W_mK', v)) put('thermal_conductivity_W_mK', v, 'estimated',
+              `Estimated: power-law fit conductivity = ${round(Math.exp(a), 5)} x density^${round(b, 3)} on ${n} records (${pl.label}), R2 = ${round(r2, 2)}`);
+          }
+        }
+      }
+
+      // porosity from density with an assumed particle density
+      if (P.porosity_pct == null && isExt('dry_density_kg_m3')) {
+        const v = round((1 - P.dry_density_kg_m3 / EST_PARTICLE_DENSITY) * 100, 1);
+        if (v >= 0 && inRange('porosity_pct', v)) put('porosity_pct', v, 'estimated',
+          `Estimated: (1 - dry density / ${EST_PARTICLE_DENSITY}) x 100, assuming a particle density of ${EST_PARTICLE_DENSITY} kg/m3`);
+      }
+
+      // identities again, now that specific heat / conductivity may exist
+      for (let i = 0; i < 3 && identities(); i++) {}
+      return { P, basis, notes };
+    }
+
+    function buildExportRecord(it) {
+      const verified = {}, basis = {}, pages = {};
+      Object.keys(it.provenance || {}).forEach(k => {
+        verified[k] = !!it.provenance[k].verified; basis[k] = it.provenance[k].type; pages[k] = it.provenance[k].page ?? null;
+      });
+      const vr = verifiedRatio(it);
+      const comp = getCompleted(it);
+      return {
+        id: it.id,
+        name: it.material_label,
+        techniques: it.technique_tags,
+        tags: it.tags,
+        soil: {
+          clay_pct: it.soil_fractions.clay_pct, silt_pct: it.soil_fractions.silt_pct,
+          sand_pct: it.soil_fractions.sand_pct, gravel_pct: it.soil_fractions.gravel_pct,
+          texture_class: it.soil_texture_class, source: it.soil_fractions_source, match_ready: isMatchReady(it)
+        },
+        composition: it.composition.map(c => ({ component: c.component, category: c.category, pct: c.pct, basis: c.basis, detail: c.detail })),
+        summary: it.summary,
+        properties: comp.P,
+        property_basis: { ...basis, ...comp.basis },   // reported | manual | derived | estimated
+        property_notes: comp.notes,                    // how each derived / estimated value was obtained
+        verified,
+        verified_ratio: `${vr.verified}/${vr.total}`,
+        fully_verified: isFullyVerified(it),
+        curing: it.curing,
+        test_conditions: it.test_conditions,
+        data_origin: it.data_origin,
+        source: { doi: it.paper?.doi || null, title: it.paper?.title || null, year: it.paper?.year ?? null, soil_origin: it.paper?.soil_origin || null, pages },
+        flags: it.flags || []
+      };
+    }
+
+    function download(content, filename, mime) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([content], { type: mime }));
+      a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    }
+
+    function exportRecords() {
+      const only = document.getElementById('export-verified-only')?.checked;
+      return only ? catalogue.filter(isFullyVerified) : catalogue;
+    }
+
+    function buildExportPayload(recs, verifiedOnly) {
+      return {
+        schema: 'earth_materials_catalogue', version: 1, exported_at: new Date().toISOString(),
+        count: recs.length, verified_only: !!verifiedOnly,
+        materials: recs.map(buildExportRecord)
+      };
+    }
+
+    function exportJSON() {
+      const recs = exportRecords();
+      if (!recs.length) { showNotification(document.getElementById('export-verified-only').checked ? 'No fully verified records to export.' : 'Nothing to export.'); return; }
+      const payload = buildExportPayload(recs, !!document.getElementById('export-verified-only').checked);
+      download(JSON.stringify(payload, null, 2), `earth_materials_catalogue_${Date.now()}.json`, 'application/json');
+      showNotification(`Exported ${recs.length} material(s) for Grasshopper.`);
+    }
+
+    function exportBackup() {
+      if (!catalogue.length) { showNotification('Nothing to back up.'); return; }
+      download(JSON.stringify({ schema: 'earth_catalogue_backup', version: 1, exported_at: new Date().toISOString(), records: catalogue }, null, 2), `earth_catalogue_backup_${Date.now()}.json`, 'application/json');
+      showNotification('Full backup saved (includes provenance and audit status).');
+    }
+
+    function importBackup(e) {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = () => {
+        try {
+          const data = JSON.parse(r.result);
+          if (data.schema !== 'earth_catalogue_backup' || !Array.isArray(data.records)) throw new Error('Not an earth catalogue backup file (use the Backup button, not the Grasshopper JSON).');
+          const have = new Set(catalogue.map(c => c.id));
+          const incoming = data.records.filter(x => x && x.schema === SCHEMA && !have.has(x.id));
+          catalogue = incoming.concat(catalogue);
+          saveState();
+          showNotification(`Imported ${incoming.length} record(s), skipped ${data.records.length - incoming.length}.`);
+        } catch (err) { showNotification(`Import failed: ${err.message}`); }
+      };
+      r.readAsText(f);
+      e.target.value = '';
+    }
+
+    function flatRow(it) {
+      const P = it.properties || {}, s = it.soil_fractions || {}, vr = verifiedRatio(it);
+      const row = {
+        id: it.id, name: it.material_label, techniques: (it.technique_tags || []).join('|'), tags: (it.tags || []).join('|'),
+        clay_pct: s.clay_pct, silt_pct: s.silt_pct, sand_pct: s.sand_pct, gravel_pct: s.gravel_pct,
+        texture_class: it.soil_texture_class, soil_fraction_source: it.soil_fractions_source,
+        fibre_pct: it.summary?.fibre_pct, stabilizer_pct: it.summary?.stabilizer_pct, water_content_pct: it.summary?.water_content_pct
+      };
+      PROPS.forEach(p => { row[p.key] = P[p.key] ?? null; });
+      Object.assign(row, { verified_ratio: `${vr.verified}/${vr.total}`, doi: it.paper?.doi, title: it.paper?.title, flags: (it.flags || []).join('; ') });
+      return row;
+    }
+
+    function exportCSV() {
+      const recs = exportRecords();
+      if (!recs.length) { showNotification('Nothing to export.'); return; }
+      const rows = recs.map(flatRow), cols = Object.keys(rows[0]);
+      const q = v => v == null ? '' : `"${String(v).replace(/"/g, '""')}"`;
+      download([cols.join(',')].concat(rows.map(r => cols.map(c => q(r[c])).join(','))).join('\n'), `earth_materials_${Date.now()}.csv`, 'text/csv');
+    }
+
+    function exportExcel() {
+      const recs = exportRecords();
+      if (!recs.length) { showNotification('Nothing to export.'); return; }
+      try {
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(recs.map(flatRow)), 'Materials');
+        const comp = [];
+        recs.forEach(it => (it.composition || []).forEach(c => comp.push({ id: it.id, name: it.material_label, component: c.component, category: c.category, pct: c.pct, basis: c.basis, detail: c.detail })));
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(comp), 'Composition');
+        XLSX.writeFile(wb, `earth_materials_${Date.now()}.xlsx`);
+      } catch (err) { showNotification(`Excel export error: ${err.message}`); }
+    }
+
+    // ============================================================
+    // SETTINGS
+    // ============================================================
+    function saveSettings() {
+      localStorage.setItem(VERIFIER_STORAGE, document.getElementById('cfg-verifier').value.trim());
+      showNotification('Verifier name saved in this browser.');
+    }
+    async function testLLMConnection() {
+      showNotification('Testing...');
+      try {
+        const j = await (await api('/api/test', { method: 'POST' })).json();
+        showNotification(j.ok ? `${j.model} works.` : `Test failed: ${j.error}`);
+      } catch (e) { showNotification(`Test failed: ${e.message}`); }
+    }
+
+    // ============================================================
+    // INIT
+    // ============================================================
+    window.addEventListener('DOMContentLoaded', async () => {
+      document.getElementById('cfg-verifier').value = localStorage.getItem(VERIFIER_STORAGE) || '';
+      populateTechniqueFilter();
+      initManualForm();
+      clearExtraction();
+      updateVisionBanner();
+      renderTable();
+      window.addEventListener('paste', handleGlobalPaste);
+      document.getElementById('paper-raw-text').addEventListener('input', updateVisionBanner);
+      await loadFromServer();
+    });
+  </script>
+</body>
+</html>

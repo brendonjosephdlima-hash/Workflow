@@ -1,0 +1,55 @@
+# ================= 
+# GIS & Spatial Data
+# ================= 
+*.shp
+*.shx
+*.dbf
+*.prj
+*.sbn
+*.sbx
+*.tif
+*.geojson
+
+# ==========================
+# Databases & Spreadsheets
+# ==========================
+*.db
+*.sqlite
+*.xls
+*.xlsx
+*.csv
+
+# ==========================
+# Python & Virtual Environments
+# ==========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.env
+.pytest_cache/
+
+# ==========================
+# IDEs & Editors
+# ==========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ==========================
+# Operating System Files
+# ==========================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
