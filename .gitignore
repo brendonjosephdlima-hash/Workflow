@@ -1,6 +1,15 @@
-# ================= 
-# GIS & Spatial Data
-# ================= 
+# ================= secrets (never commit) =================
+.env
+.env.*
+!.env.example
+
+# ================= private catalogue data (records, copyrighted PDFs, backups) =================
+data/
+
+# ================= large raw datasets: download them instead (see README) =================
+DSMW/
+
+# ================= GIS & spatial data =================
 *.shp
 *.shx
 *.dbf
@@ -10,18 +19,21 @@
 *.tif
 *.geojson
 
-# ==========================
-# Databases & Spreadsheets
-# ==========================
+# ================= databases & spreadsheets =================
 *.db
 *.sqlite
 *.xls
 *.xlsx
 *.csv
+# To keep the soil attributes CSV in the repo (upload_attributes.py needs it), remove the # from the next line:
+#!**/soil_data/soil_data.csv
 
-# ==========================
-# Python & Virtual Environments
-# ==========================
+# ================= Rhino / Grasshopper backups and big models =================
+*.3dm
+*.3dmbak
+*.rhl
+
+# ================= Python & virtual environments =================
 __pycache__/
 *.py[cod]
 *$py.class
@@ -29,23 +41,19 @@ __pycache__/
 .Python
 env/
 venv/
+.venv/
 ENV/
 env.bak/
 venv.bak/
-.env
 .pytest_cache/
 
-# ==========================
-# IDEs & Editors
-# ==========================
+# ================= IDEs & editors =================
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# ==========================
-# Operating System Files
-# ==========================
+# ================= operating system / Office junk =================
 .DS_Store
 .DS_Store?
 ._*
@@ -53,3 +61,5 @@ venv.bak/
 .Trashes
 Thumbs.db
 ehthumbs.db
+desktop.ini
+~$*
