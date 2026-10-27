@@ -77,7 +77,7 @@
 
     <!-- CATALOGUE -->
     <section id="tab-catalogue" class="flex-1 flex flex-col space-y-4 overflow-hidden">
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-3" id="stats-row"></div>
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-3" id="stats-row"></div>
       <div class="flex flex-col lg:flex-row justify-between items-stretch lg:items-center gap-3 border border-slate-200 rounded-lg p-3 bg-white shadow-sm">
         <input type="text" id="search-input" oninput="renderTable()" placeholder="Search label, DOI, tag, source..."
           class="flex-1 border border-slate-300 rounded-md px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-slate-900">
@@ -89,6 +89,10 @@
             <option value="composition">Has composition</option>
             <option value="thermal">Has thermal data</option>
             <option value="strength">Has strength data</option>
+            <option value="mechanical">Mechanical (any)</option>
+            <option value="mechanical:ready">Mechanical, Karamba-ready</option>
+            <option value="thermal">Thermal (any)</option>
+            <option value="thermal:ready">Thermal, Honeybee-ready</option>
           </select>
           <select id="filter-verify" onchange="renderTable()" class="border border-slate-300 rounded-md px-3 py-2 text-xs bg-white font-mono">
             <option value="">All verification</option>
@@ -381,6 +385,7 @@
       { key: 'flexural_strength_MPa', label: 'Flexural strength (ff)', unit: 'MPa', group: 'mechanical', range: [0, 15] },
       { key: 'tensile_strength_MPa', label: 'Tensile strength (ft)', unit: 'MPa', group: 'mechanical', range: [0, 8] },
       { key: 'elastic_modulus_MPa', label: 'Elastic modulus (E)', unit: 'MPa', group: 'mechanical', range: [1, 20000] },
+      { key: 'poisson_ratio', label: 'Poisson’s ratio (ν)', unit: '-', group: 'mechanical', range: [0, 0.5] },
       { key: 'shrinkage_pct', label: 'Drying shrinkage', unit: '%', group: 'hygric', range: [0, 25] },
       { key: 'water_absorption_pct', label: 'Water absorption', unit: '%', group: 'hygric', range: [0, 60] }
     ];
@@ -566,6 +571,18 @@
         rec.provenance[p.key] = mkProv(raw._manual ? 'manual' : 'reported', ev[p.key], raw._manual ? 'Entered manually' : '');
         if (p.range && (v < p.range[0] || v > p.range[1])) rec.flags.push(`implausible:${p.key}=${v} (expected ${p.range[0]}-${p.range[1]} ${p.unit}; unit slip?)`);
       });
+      // ---- raw data the code can calculate density / modulus from (see applyDerived)
+      const rd = raw.raw_data && typeof raw.raw_data === 'object' ? raw.raw_data : {};
+      const shape = ['prism', 'cylinder'].includes(rd.specimen_shape) ? rd.specimen_shape : null;
+      const ss = (Array.isArray(rd.stress_strain) ? rd.stress_strain : [])
+        .map(p => ({ strain: num(p?.strain), stress_MPa: num(p?.stress_MPa) })).filter(p => p.strain != null && p.stress_MPa != null);
+      rec.raw_data = {
+        specimen_shape: shape, length_mm: num(rd.length_mm), width_mm: num(rd.width_mm), height_mm: num(rd.height_mm),
+        diameter_mm: num(rd.diameter_mm), dry_mass_g: num(rd.dry_mass_g), stress_strain: ss.length >= 2 ? ss.slice(0, 2) : null
+      };
+      if (Object.values(rec.raw_data).every(v => v == null)) rec.raw_data = null;
+      if (rec.raw_data) rec.provenance.raw_data = mkProv(raw._manual ? 'manual' : 'reported', ev.raw_data, raw._manual ? 'Entered manually' : '');
+
       if (rec.composition.length) rec.provenance.composition = mkProv(raw._manual ? 'manual' : 'reported', ev.composition, raw._manual ? 'Entered manually' : '');
       if (rec.soil_fractions_source === 'reported') rec.provenance.soil_fractions = mkProv(raw._manual ? 'manual' : 'reported', ev.soil_fractions, raw._manual ? 'Entered manually' : '');
 
@@ -574,13 +591,39 @@
       return rec;
     }
 
-    // derived thermal values: computed, flagged as derived, never overwrite reported values
+    // derived values: computed, flagged as derived, never overwrite reported values
     function applyDerived(rec) {
       const P = rec.properties;
       // remove stale derived values before recomputing
       Object.keys(rec.provenance).forEach(k => { if (rec.provenance[k].type === 'derived') { delete rec.provenance[k]; delete P[k]; } });
-      const rho = P.dry_density_kg_m3, cp = P.specific_heat_J_kgK, k = P.thermal_conductivity_W_mK;
       const mkD = (note) => ({ type: 'derived', page: null, quote: note, from_figure: false, verified: false, verified_by: null, verified_date: null, audit_note: '' });
+      const inRange = (k, v) => { const r = PROP_BY_KEY[k].range; return v >= r[0] && v <= r[1]; };
+
+      // from the paper's own raw data: density = mass / volume, E = slope of the elastic part of the stress-strain curve
+      rec.flags = (rec.flags || []).filter(f => !f.startsWith('raw_'));   // re-added below if still true
+      const R = rec.raw_data, pg = rec.provenance.raw_data?.page != null ? ` (raw data, page ${rec.provenance.raw_data.page})` : ' (raw data)';
+      if (R && P.dry_density_kg_m3 == null && R.dry_mass_g != null) {
+        const vol = R.specimen_shape === 'cylinder' && R.diameter_mm != null && R.height_mm != null ? Math.PI * R.diameter_mm ** 2 / 4 * R.height_mm
+                  : R.specimen_shape === 'prism' && R.length_mm != null && R.width_mm != null && R.height_mm != null ? R.length_mm * R.width_mm * R.height_mm : null;
+        const v = vol ? round(R.dry_mass_g / 1000 / (vol / 1e9), 0) : null;
+        if (v != null && inRange('dry_density_kg_m3', v)) {
+          P.dry_density_kg_m3 = v;
+          rec.provenance.dry_density_kg_m3 = mkD(`Calculated: dry mass ${R.dry_mass_g} g / ${R.specimen_shape} volume ${round(vol / 1000, 1)} cm3${pg}`);
+        } else if (v != null) rec.flags.push(`raw_density_implausible (${v} kg/m3 from mass and dimensions; check units)`);
+      }
+      // the elastic part of an earth stress-strain curve stays well below 3 % strain; above that the strain is probably in %
+      if (R?.stress_strain && R.stress_strain.some(p => Math.abs(p.strain) > 0.03)) {
+        if (P.elastic_modulus_MPa == null) rec.flags.push('raw_strain_looks_like_percent (strain must be a fraction, 0.2% = 0.002; E not calculated)');
+      } else if (R?.stress_strain && P.elastic_modulus_MPa == null) {
+        const [a, b] = R.stress_strain, de = b.strain - a.strain;
+        const v = de !== 0 ? round((b.stress_MPa - a.stress_MPa) / de, 0) : null;
+        if (v != null && v > 0 && inRange('elastic_modulus_MPa', v)) {
+          P.elastic_modulus_MPa = v;
+          rec.provenance.elastic_modulus_MPa = mkD(`Calculated: slope of the elastic part of the stress-strain curve, (${b.stress_MPa} - ${a.stress_MPa}) MPa / (${b.strain} - ${a.strain})${pg}`);
+        } else if (v != null) rec.flags.push(`raw_modulus_implausible (${v} MPa from stress-strain points; strain given in % instead of a fraction?)`);
+      }
+
+      const rho = P.dry_density_kg_m3, cp = P.specific_heat_J_kgK, k = P.thermal_conductivity_W_mK;
       if (rho != null && cp != null && P.volumetric_heat_capacity_MJ_m3K == null) {
         P.volumetric_heat_capacity_MJ_m3K = round(rho * cp / 1e6, 3);
         rec.provenance.volumetric_heat_capacity_MJ_m3K = mkD('Derived: dry density x specific heat / 1e6');
@@ -623,6 +666,29 @@
     function isMatchReady(item) { const s = item.soil_fractions || {}; return s.clay_pct != null && s.silt_pct != null && s.sand_pct != null; }
     function hasThermal(item) { const p = item.properties || {}; return p.thermal_conductivity_W_mK != null || p.specific_heat_J_kgK != null; }
     function hasStrength(item) { const p = item.properties || {}; return p.compressive_strength_MPa != null || p.flexural_strength_MPa != null || p.tensile_strength_MPa != null; }
+
+    // Domains and the minimum each needs downstream: mechanical -> Karamba, thermal -> Honeybee.
+    // A record belongs to a domain when the paper reports one of its 'trigger' values.
+    //   ready      : every 'need' value is reported or calculated from the paper's own data
+    //   estimated  : complete only thanks to a statistical estimate (see completeProperties)
+    //   incomplete : something in 'need' is missing
+    const DOMAINS = {
+      mechanical: { label: 'Mechanical', tool: 'Karamba', trigger: ['compressive_strength_MPa', 'elastic_modulus_MPa', 'tensile_strength_MPa', 'flexural_strength_MPa'],
+                    need: ['compressive_strength_MPa', 'elastic_modulus_MPa', 'dry_density_kg_m3'] },
+      thermal:    { label: 'Thermal', tool: 'Honeybee', trigger: ['thermal_conductivity_W_mK', 'specific_heat_J_kgK', 'thermal_diffusivity_mm2_s'],
+                    need: ['thermal_conductivity_W_mK', 'dry_density_kg_m3', 'specific_heat_J_kgK'] }
+    };
+    const SHORT = { compressive_strength_MPa: 'fc', elastic_modulus_MPa: 'E', dry_density_kg_m3: 'ρ', thermal_conductivity_W_mK: 'λ', specific_heat_J_kgK: 'cp' };
+    function readiness(it) {
+      const c = getCompleted(it), out = {};
+      Object.entries(DOMAINS).forEach(([d, r]) => {
+        if (!r.trigger.some(k => c.P[k] != null && c.basis[k] !== 'estimated')) return;
+        const missing = r.need.filter(k => c.P[k] == null);
+        const estimated = r.need.filter(k => c.P[k] != null && c.basis[k] === 'estimated');
+        out[d] = { level: missing.length ? 'incomplete' : estimated.length ? 'estimated' : 'ready', missing, estimated };
+      });
+      return out;
+    }
     function dedupeKey(item) { return `${(item.paper?.doi || item.paper?.title || '').toLowerCase()}|${item.material_label.toLowerCase()}|${(item.cited_ref || '').toLowerCase()}|${(item.test_conditions || '').toLowerCase()}`; }
 
     // ============================================================
@@ -785,6 +851,10 @@
         existing.soil_fractions_source = rec.soil_fractions_source;
         existing.soil_texture_class = rec.soil_texture_class;
         if (rec.provenance.soil_fractions) existing.provenance.soil_fractions = rec.provenance.soil_fractions;
+      }
+      if (!existing.raw_data && rec.raw_data) {
+        existing.raw_data = rec.raw_data;
+        existing.provenance.raw_data = rec.provenance.raw_data;
       }
       existing.summary = existing.summary || rec.summary;
       applyDerived(existing);
@@ -1126,7 +1196,11 @@
       const cells = [
         ['Materials', n, ''],
         ['Match-ready', catalogue.filter(isMatchReady).length, 'clay + silt + sand known'],
-        ['With thermal data', catalogue.filter(hasThermal).length, '\u03BB or cp reported'],
+        ...Object.entries(DOMAINS).map(([d, r]) => {
+          const inD = catalogue.filter(it => readiness(it)[d]);
+          return [`${r.label} ready`, `${inD.filter(it => readiness(it)[d].level === 'ready').length} / ${inD.length}`,
+                  `${r.need.map(k => SHORT[k]).join(' + ')} for ${r.tool}`];
+        }),
         ['Fully verified', catalogue.filter(isFullyVerified).length, 'every reported value signed off']
       ];
       document.getElementById('stats-row').innerHTML = cells.map(c => `
@@ -1155,6 +1229,10 @@
         if (fd === 'composition' && !(it.composition || []).length) return false;
         if (fd === 'thermal' && !hasThermal(it)) return false;
         if (fd === 'strength' && !hasStrength(it)) return false;
+        if (/^(mechanical|thermal)/.test(fd)) {
+          const [d, lvl] = fd.split(':'), r = readiness(it)[d];
+          if (!r || (lvl && r.level !== lvl)) return false;
+        }
         if (fv === 'verified' && !isFullyVerified(it)) return false;
         if (fv === 'unverified' && isFullyVerified(it)) return false;
         if (fv === 'flagged' && !(it.flags || []).length) return false;
@@ -1217,12 +1295,14 @@
               ${line('ff', 'flexural_strength_MPa', 2, 'MPa')}
               ${line('ft', 'tensile_strength_MPa', 2, 'MPa')}
               ${line('E', 'elastic_modulus_MPa', 0, 'MPa')}
+              ${P.poisson_ratio != null ? line('ν', 'poisson_ratio', 2, '') : ''}
             </td>
             <td class="p-3 border-r border-slate-200 text-[10px] font-mono">
               <div class="text-slate-600 break-all">${esc(it.paper?.doi || 'no DOI')}</div>
               <div class="text-slate-400 truncate max-w-[200px]" title="${esc(it.paper?.title)}">${esc(it.paper?.title || '')}</div>
               <div class="mt-1.5 flex flex-wrap gap-1">
                 <span class="badge ${full ? 'badge-ok' : 'badge-pend'}">${vr.verified}/${vr.total} verified</span>
+                ${readinessHtml(it)}
                 ${(it.flags || []).length ? `<span class="badge badge-warn" title="${esc(it.flags.join('; '))}">${it.flags.length} flag(s)</span>` : ''}
                 ${(it.cross_references || []).length ? `<span class="badge badge-man">+${it.cross_references.length} conflicting</span>` : ''}
               </div>
@@ -1236,6 +1316,15 @@
       }).join('');
     }
 
+    function readinessHtml(it) {
+      return Object.entries(readiness(it)).map(([d, r]) => {
+        const D = DOMAINS[d], name = d === 'mechanical' ? 'MECH' : 'THERM';
+        if (r.level === 'ready') return `<span class="badge badge-ok" title="${D.label}: all of ${D.need.map(k => SHORT[k]).join(', ')} from the paper. Ready for ${D.tool}.">${name} ready</span>`;
+        if (r.level === 'estimated') return `<span class="badge badge-est" title="${D.label}: ${r.estimated.map(k => SHORT[k]).join(', ')} only estimated, not from the paper.">${name} est.</span>`;
+        return `<span class="badge badge-pend" title="${D.label}: not enough for ${D.tool}.">${name} needs ${r.missing.map(k => SHORT[k]).join(', ')}</span>`;
+      }).join('');
+    }
+
     function deleteRecord(id) {
       const it = catalogue.find(r => r.id === id);
       if (!it || !confirm(`Delete "${it.material_label}"?`)) return;
@@ -1246,8 +1335,13 @@
     // ============================================================
     // AUDIT MODAL
     // ============================================================
-    function auditLabel(k) { return k === 'composition' ? 'Composition' : k === 'soil_fractions' ? 'Soil fractions' : (PROP_BY_KEY[k]?.label || k); }
+    function auditLabel(k) { return k === 'composition' ? 'Composition' : k === 'soil_fractions' ? 'Soil fractions' : k === 'raw_data' ? 'Raw data (specimen, stress-strain)' : (PROP_BY_KEY[k]?.label || k); }
     function auditValueText(item, k) {
+      if (k === 'raw_data') {
+        const R = item.raw_data || {}, dims = R.specimen_shape === 'cylinder' ? `d ${fmt(R.diameter_mm, 1)} x h ${fmt(R.height_mm, 1)} mm` : `${fmt(R.length_mm, 1)} x ${fmt(R.width_mm, 1)} x ${fmt(R.height_mm, 1)} mm`;
+        return [R.specimen_shape || R.dry_mass_g != null ? `${R.specimen_shape || 'specimen'} ${dims}, dry mass ${fmt(R.dry_mass_g, 1)} g` : null,
+                R.stress_strain ? 'stress-strain ' + R.stress_strain.map(p => `(${p.strain}, ${p.stress_MPa} MPa)`).join(' ') : null].filter(Boolean).join('; ') || '-';
+      }
       if (k === 'composition') return (item.composition || []).map(c => `${c.component || c.category}: ${c.pct == null ? '?' : c.pct + '%'}`).join('; ') || '-';
       if (k === 'soil_fractions') { const s = item.soil_fractions; return `clay ${fmt(s.clay_pct, 1)} / silt ${fmt(s.silt_pct, 1)} / sand ${fmt(s.sand_pct, 1)} / gravel ${fmt(s.gravel_pct, 1)} %`; }
       const p = PROP_BY_KEY[k];
@@ -1383,7 +1477,7 @@
           <td class="p-1.5">${esc(typeName[b] || b)}${n ? `<div class="text-[10px] text-slate-500 font-normal">${esc(n)}</div>` : ''}</td><td class="p-1.5">${filled ? '-' : (p.page ?? '-')}</td><td class="p-1.5">${p.verified ? '\u2713' : '-'}</td></tr>`;
       }).join('');
       document.getElementById('modal-spec-body').innerHTML = `
-        <div class="flex flex-wrap gap-1">${tagsHtml(it)}</div>
+        <div class="flex flex-wrap gap-1">${tagsHtml(it)}${readinessHtml(it)}</div>
         <div>${compBarHtml(it)}${compListHtml(it)}</div>
         <div class="grid grid-cols-2 gap-2">
           <div><span class="text-slate-500">Texture class:</span> <strong>${esc(it.soil_texture_class || '-')}</strong></div>
@@ -1588,6 +1682,8 @@
         name: it.material_label,
         techniques: it.technique_tags,
         tags: it.tags,
+        domains: Object.keys(readiness(it)),        // mechanical and/or thermal
+        readiness: readiness(it),                   // per domain: {level: ready|estimated|incomplete, missing[], estimated[]}
         soil: {
           clay_pct: it.soil_fractions.clay_pct, silt_pct: it.soil_fractions.silt_pct,
           sand_pct: it.soil_fractions.sand_pct, gravel_pct: it.soil_fractions.gravel_pct,

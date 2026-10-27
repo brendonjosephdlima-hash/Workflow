@@ -13,8 +13,10 @@ RULES (follow strictly)
 6. evidence: for composition, soil_fractions and EVERY non-null property give { "page": <PDF page number, 1 = first page of the file or the "--- Page N ---" marker in the text>, "quote": "<verbatim text from the paper, at most 30 words, or a table/figure label>", "from_figure": true|false }.
 7. paper-level fields: title, doi (bare DOI starting with "10.", never a URL), year, soil_origin (country or region where the soil came from, if stated).
 8. curing: curing time and conditions as stated. test_conditions: specimen size, moisture or humidity state, standard used, direction of load or print orientation if stated.
-9. print_parameters (only for 3D-printed mixes): nozzle diameter, layer height, printing speed, buildability notes, as stated; otherwise null.
-10. Output JSON only, exactly in this shape:
+9. raw_data: if the paper does NOT state dry density or elastic modulus for a mix but gives the data to calculate it, report that data and leave the property null. The code does the calculation; never calculate density or modulus yourself. Specimen: shape ("prism" or "cylinder"), dimensions in mm and dry mass in g. Stress-strain: two points on the straight, elastic part of the curve, strain as a fraction (0.2% = 0.002), stress in MPa; read off a figure if needed and say so in the evidence. Give raw_data even when the property is also stated, if it is easy to find; otherwise null.
+10. poisson_ratio: only if the paper reports it for that mix.
+11. print_parameters (only for 3D-printed mixes): nozzle diameter, layer height, printing speed, buildability notes, as stated; otherwise null.
+12. Output JSON only, exactly in this shape:
 {
   "title": "string", "doi": "10....", "year": number|null, "soil_origin": "string|null",
   "materials": [
@@ -27,14 +29,15 @@ RULES (follow strictly)
       "water_content_pct": n|null,
       "curing": "string|null", "test_conditions": "string|null",
       "print_parameters": { "nozzle_mm": n|null, "layer_height_mm": n|null, "speed_mm_s": n|null, "buildability": "string|null" } | null,
+      "raw_data": { "specimen_shape": "prism|cylinder|null", "length_mm": n|null, "width_mm": n|null, "height_mm": n|null, "diameter_mm": n|null, "dry_mass_g": n|null, "stress_strain": [ { "strain": n, "stress_MPa": n }, { "strain": n, "stress_MPa": n } ] | null } | null,
       "properties": {
         "dry_density_kg_m3": n|null, "porosity_pct": n|null,
         "thermal_conductivity_W_mK": n|null, "specific_heat_J_kgK": n|null, "thermal_diffusivity_mm2_s": n|null,
         "decrement_factor": n|null, "time_lag_h": n|null,
-        "compressive_strength_MPa": n|null, "flexural_strength_MPa": n|null, "tensile_strength_MPa": n|null, "elastic_modulus_MPa": n|null,
+        "compressive_strength_MPa": n|null, "flexural_strength_MPa": n|null, "tensile_strength_MPa": n|null, "elastic_modulus_MPa": n|null, "poisson_ratio": n|null,
         "shrinkage_pct": n|null, "water_absorption_pct": n|null
       },
-      "evidence": { "composition": {...}, "soil_fractions": {...}, "<each non-null property key>": { "page": n, "quote": "...", "from_figure": false } },
+      "evidence": { "composition": {...}, "soil_fractions": {...}, "raw_data": {...}, "<each non-null property key>": { "page": n, "quote": "...", "from_figure": false } },
       "notes": "anything a reader should know about this entry, or null"
     }
   ]
