@@ -20,8 +20,12 @@ Looks up the soil at a chosen location from a Supabase (PostGIS) database built 
 | `upload_soil.py` | uploads the DSMW polygons (`DSMW/DSMW.shp`) to the table `global_soils` |
 | `upload_attributes.py` | uploads `soil_data/soil_data.csv` to the table `soil_attributes` |
 | `query_soil.py` | test lookups at four places; `--setup` adds the `SNUM` join column and the spatial index |
-| `enable_rls.sql` | row-level security for both tables (run once in the Supabase SQL Editor) |
-| `Soil Import component.gh` | Grasshopper definition |
+| `enable_rls.sql` | row-level security for both tables: read-only for the publishable key (run in the Supabase SQL Editor after every upload) |
+| `../00_Grasshopper Env/Soil Import component.gh` | Grasshopper definition (soil lookup + catalogue components) |
+
+`soil_data.csv` (per-soil-unit attributes in SWAT format: SNAM, TEXTURE, HYDGRP, SOL_BD1, CLAY1, ...) is not in the
+repo because of the `*.csv` rule in `.gitignore`. Put it at `01_Soil Extraction/soil_data/soil_data.csv`.
+TODO: document where this file was downloaded from.
 
 **Rebuilding the database** (the upload scripts read the connection string from the environment):
 
@@ -35,6 +39,8 @@ Both uploads use `if_exists="replace"`, which drops and recreates the table. Tha
 row-level security step have to be repeated after every re-upload.
 
 The `get_soil` SQL function (defined in `get_soil.sql`) needs to be created in your Supabase project (run it once in the Supabase SQL Editor).
+After running `enable_rls.sql`, test the soil component once: it should still return data. If it returns nothing,
+the function cannot see the tables; recreate it with `security definer set search_path = public, extensions`.
 
 **Source data:** FAO/UNESCO Digital Soil Map of the World (DSMW), Version 3.6 (2003). Downloadable via the [FAO Soils Portal](https://www.fao.org/soils-portal/data-hub/soil-maps-and-databases/faounesco-soil-map-of-the-world/en/) (the `DSMW/` folder is omitted from this repo due to file size).
 
