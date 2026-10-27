@@ -150,7 +150,8 @@ Known wiring slip (unconfirmed, .gh is binary): `04_match` may have an input nam
 - Uploads use `if_exists="replace"` (drops the table). After every upload: `python query_soil.py --setup`, then run
   `enable_rls.sql` (read-only policies + revoked writes for anon/authenticated). If `get_soil` then returns nothing,
   recreate it with `security definer set search_path = public, extensions`.
-- **RLS has not yet been confirmed on the live project** (enable_rls.sql was written 2026-10-27, not yet run).
+- RLS enabled on both tables 2026-10-27 (enable_rls.sql run, `rowsecurity = true` confirmed).
+  Still to confirm: the Grasshopper soil component returns data with RLS on.
 
 ---
 
@@ -182,7 +183,7 @@ extrusion, printable, robocasting) that flags records missing `3d_printed`; an "
 re-extracting one known 3D-printing paper (needs Gemini).
 
 ### 9.4 Other
-- Run `enable_rls.sql` in Supabase and confirm the soil component still returns data.
+- RLS is on; confirm the soil component still returns data.
 - Document where `soil_data.csv` came from (it is SWAT-format: SNAM, HYDGRP, SOL_BD1, CLAY1...).
 - Add a LICENSE if the repo should be reusable.
 
