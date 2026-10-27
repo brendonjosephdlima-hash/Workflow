@@ -76,6 +76,7 @@ else:
     drops = {"other method": 0, "no soil data": 0, "not verified": 0, "too weak": 0,
              "too conductive": 0, "below min match": 0}
     scored = []
+    no_soil_names = []    # right method, but the paper gave no clay/silt/sand
     for m in mats:
         if want and want not in [norm(t) for t in (m.get("techniques") or [])]:
             drops["other method"] += 1
@@ -83,6 +84,7 @@ else:
         s = m.get("soil") or {}
         if not s.get("match_ready"):
             drops["no soil data"] += 1
+            no_soil_names.append(m.get("name"))
             continue
         if only_verified and not m.get("fully_verified"):
             drops["not verified"] += 1
@@ -97,6 +99,7 @@ else:
         t = three(s["clay_pct"], s["silt_pct"], s["sand_pct"])
         if t is None:
             drops["no soil data"] += 1
+            no_soil_names.append(m.get("name"))
             continue
         delta = [a - b for a, b in zip(t, site)]            # change needed: site soil -> recipe soil
         match = 100.0 - 0.5 * sum(abs(x) for x in delta)    # 100 = identical
@@ -135,5 +138,8 @@ else:
             lines.append("Note: some soil values were computed from the recipe, not measured soil. Check the source paper.")
     else:
         lines.append("No candidates left.")
+    if no_soil_names:
+        lines.append("%d material(s) use this method but have no soil composition, so they cannot be matched "
+                     "(see component 3): %s" % (len(no_soil_names), "; ".join(str(n) for n in no_soil_names)))
     lines.append("Left out: " + ", ".join("%d %s" % (v, k) for k, v in drops.items() if v) if any(drops.values()) else "Nothing left out.")
     report = "\n".join(lines)
