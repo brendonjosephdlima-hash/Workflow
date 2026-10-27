@@ -35,6 +35,7 @@ Workflow/
     app.py  prompt.txt  requirements.txt  .env.example  README.md
     static/index.html                 <- the whole UI, one file (vanilla JS + Tailwind CDN)
     grasshopper/01_fetch.py 02_decode.py 03_list_by_method.py 04_match.py 05_decode_best.py
+                06_karamba_material.py 07_honeybee_material.py
     data/   (NOT in git: catalogue.json, pdfs/, backups/, exports/)
 ```
 
@@ -73,7 +74,12 @@ Env vars: `GEMINI_API_KEY`, `GEMINI_MODELS`, `PORT`, `HOST`, `CATALOGUE_DATA`, `
   `deriveTags` adds `fibre_reinforced`, `stabilised_*`, `unstabilised`.
 - On load, a migration tidies existing records the same way (names, `cited_ref`, 3D-printed tags) and notifies
   "Tidied N record(s)... Remember to publish". The cloud export only changes after **Publish**.
-- `applyDerived`: exact derived values (vhc, diffusivity), provenance type `derived`.
+- `applyDerived`: exact derived values, provenance type `derived`: vhc, diffusivity, and from `raw_data` dry density
+  (mass / prism or cylinder volume) and E (slope of two elastic stress-strain points). Strain > 0.03 is treated as a
+  % unit slip: E not calculated, flag `raw_strain_looks_like_percent`. `raw_*` flags are reset on every run.
+- `DOMAINS` + `readiness(it)`: mechanical (trigger fc/E/ft/ff, needs fc + E + rho, for Karamba) and thermal (trigger
+  lambda/cp/alpha, needs lambda + rho + cp, for Honeybee). Levels `ready` (reported/manual/derived), `estimated`,
+  `incomplete`. Shown as MECH/THERM badges (`readinessHtml`), in stats, and as `filter-data` options `mechanical[:ready]`.
 - `mergeOrInsert` + `dedupeKey` (`doi|label|cited_ref|test_conditions`, lowercased): never overwrites values.
 - `completeProperties` / `getCompleted` (cache `completeCache`, reset in `saveState`): export-time completion (section 5).
 - `buildExportRecord`, `buildExportPayload`, `persistCatalogue`, `publishToCloud`, `renderTable` (REP/CALC/EST badges,
@@ -83,13 +89,14 @@ Env vars: `GEMINI_API_KEY`, `GEMINI_MODELS`, `PORT`, `HOST`, `CATALOGUE_DATA`, `
 ### Record shape (main fields)
 `id`, `material_label`, `label_original` (pre-migration name), `label_note`, `cited_ref`, `technique_tags[]`, `technique_note`, `tags[]`,
 `paper{title,doi,year,soil_origin,pdf_id}`, `soil_fractions{clay_pct,silt_pct,sand_pct,gravel_pct,note}`,
-`soil_fractions_source` (`reported` | `computed_from_composition`), `soil_texture_class`, `composition[]`
+`raw_data{specimen_shape,length_mm,width_mm,height_mm,diameter_mm,dry_mass_g,stress_strain[2]}` (auditable key
+`raw_data`), `soil_fractions_source` (`reported` | `computed_from_composition`), `soil_texture_class`, `composition[]`
 (categories incl. `soil` for natural soil of unknown grading), `properties{}` (14 keys),
 `provenance{key:{type,page,quote,from_figure,verified,pdf_id}}`, `curing`, `test_conditions`, `data_origin`, `flags[]`.
 
 Property keys: `dry_density_kg_m3, porosity_pct, thermal_conductivity_W_mK, specific_heat_J_kgK,
 thermal_diffusivity_mm2_s, volumetric_heat_capacity_MJ_m3K, decrement_factor, time_lag_h, compressive_strength_MPa,
-tensile_strength_MPa, flexural_strength_MPa, elastic_modulus_MPa, shrinkage_pct, water_absorption_pct`.
+tensile_strength_MPa, flexural_strength_MPa, elastic_modulus_MPa, poisson_ratio, shrinkage_pct, water_absorption_pct`.
 `isFullyVerified` = every audit key verified. `isMatchReady` = clay, silt and sand all non-null.
 
 ---
@@ -97,7 +104,7 @@ tensile_strength_MPa, flexural_strength_MPa, elastic_modulus_MPa, shrinkage_pct,
 ## 4. Export JSON (what Grasshopper reads)
 
 `{schema:"earth_materials_catalogue", version:1, exported_at, count, verified_only, materials:[...]}`; each material:
-`id, name, techniques[], tags[], soil{clay_pct,silt_pct,sand_pct,gravel_pct,texture_class,source,match_ready},
+`id, name, techniques[], tags[], domains[], readiness{mechanical|thermal:{level,missing[],estimated[]}}, soil{clay_pct,silt_pct,sand_pct,gravel_pct,texture_class,source,match_ready},
 composition[], summary, properties{}, property_basis{}, property_notes{}, verified{}, verified_ratio,
 fully_verified, curing, test_conditions, data_origin, source{cited_ref,doi,title,year,soil_origin,pages}, flags[]`.
 
@@ -106,6 +113,8 @@ Two files in the public bucket `catalogue`: `earth_materials_catalogue.json` (ev
 
 Snapshot 2026-10-27: 44 records, all verified, 19 match_ready (rammed earth: 3 of 12 have soil data).
 Methods: other 16, rammed_earth 12, 3d_printed 9, adobe 5, cob 2.
+Domains: 28 mechanical (3 ready, 9 estimated, 16 incomplete), 16 thermal (all incomplete: none report density or
+cp), 0 both. Papers report either thermal or mechanical data, almost never both.
 
 ---
 
@@ -128,10 +137,12 @@ to repaste. Inputs/outputs are created by hand, named as in each script's header
 | File | Role |
 |---|---|
 | `01_fetch.py` | Button -> downloads the JSON (cache-buster `?t=`), keeps it in `sc.sticky` + a temp file. `CATALOGUE_URL` constant, overridable by `url`. |
-| `02_decode.py` | catalogue -> aligned lists (ids, names, techniques, `methods_present`, soil %, 14 properties, verified, doi, year, `basis_summary`); optional `allow_estimates`. |
+| `02_decode.py` | catalogue -> aligned lists: ids, names, techniques, `methods_present`, soil %, texture, match_ready, rho, lam, cp, fc, ff, verified, doi, year. |
 | `03_list_by_method.py` | `method` -> materials with that tag; optional `only_verified`. |
-| `04_match.py` | site clay/silt/sand + `method` -> ranked by match % = 100 - 0.5*sum(|delta|) after rescaling to 100; `correction`; optional `only_verified, min_match, min_fc, max_lambda, top_n`; `best` JSON. Only `match_ready` records are scored; the report names same-method materials left out for missing soil data. |
-| `05_decode_best.py` | `best` JSON -> scalar outputs, `tags`, `basis_summary`, `missing`; optional `allow_estimates`. |
+| `04_match.py` | site clay/silt/sand + `method` -> ranked by match % = 100 - 0.5*sum(|delta|) after rescaling to 100; `correction`; optional `only_verified, min_match, min_fc, max_lambda, top_n`; `best` JSON. Only `match_ready` records are scored; the report names same-method materials left out for missing soil data. Optional `domain` (`mechanical`/`thermal`) keeps only `ready` records for that domain (`allow_estimates` adds `estimated`). |
+| `05_decode_best.py` | `best` JSON -> scalar outputs + `missing`. |
+| `06_karamba_material.py` | `best` -> E, G, gamma, alphaT (always null), ft, fc in kN/cm2 / kN/m3; optional `nu` (assumed Poisson, default 0.2, used only if the paper has none), `allow_estimates`; `ready`, `assumptions`, `report`. |
+| `07_honeybee_material.py` | `best` + `thickness` (m) -> name, thickness_m, conductivity, density, spec_heat for HB Opaque Material; optional `cp` (assumed), `allow_estimates`; `material` = EnergyMaterial if `honeybee_energy` imports, else null. |
 
 Method Value List: `3d_printed`, `cob`, `adobe`, `rammed_earth`, `compressed_earth_block`, `cast_earth`,
 `wattle_and_daub`, `earthbag`, `other`. Names are normalised (case, spaces, hyphens, slashes -> underscore).
@@ -182,7 +193,15 @@ Prompt rule 2 + normaliser force `3d_printed` only. Remaining: keyword scan (3D 
 extrusion, printable, robocasting) that flags records missing `3d_printed`; an "edit methods" action. Verify by
 re-extracting one known 3D-printing paper (needs Gemini).
 
-### 9.4 Other
+### 9.4 Mechanical / thermal split (built 2026-10-27, not yet run against real Gemini or in Rhino)
+- Prompt asks for `poisson_ratio` and `raw_data`; only NEW extractions get them. Existing records are unchanged.
+- No thermal record reports density or cp, so no material can feed Honeybee yet: thermal papers that report
+  density (and cp or diffusivity) are needed. 07 accepts an assumed `cp` but still needs density.
+- Karamba fc sign convention depends on the Karamba version (06 outputs it positive).
+- Tests used for this: Node vm harness around the page script + exec of the GH scripts on a generated export
+  (kept outside the repo).
+
+### 9.5 Other
 - RLS is on; confirm the soil component still returns data.
 - Document where `soil_data.csv` came from (it is SWAT-format: SNAM, HYDGRP, SOL_BD1, CLAY1...).
 - Add a LICENSE if the repo should be reusable.

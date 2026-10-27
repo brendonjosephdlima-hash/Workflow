@@ -11,6 +11,9 @@
 #          min_fc      float  Item (optional)  discard materials weaker than this compressive strength (MPa)
 #          max_lambda  float  Item (optional)  discard materials more conductive than this (W/m.K)
 #          top_n       int    Item (optional)  how many to return, default 5
+#          domain      str    Item (optional)  "mechanical" (Karamba) or "thermal" (Honeybee): keep only materials
+#                                              with the minimum data for that tool (see 06 / 07)
+#          allow_estimates bool Item (optional) with domain: also accept materials complete only through estimates
 # Outputs  best, names, ids, match_pct, correction, texture, soil_source, lam, fc, rho, verified, doi, report
 #
 # best        the COMPLETE record of the best match as JSON text (same format as the catalogue file,
@@ -35,6 +38,8 @@ min_match = globals().get("min_match")
 min_fc = globals().get("min_fc")
 max_lambda = globals().get("max_lambda")
 top_n = globals().get("top_n")
+domain = globals().get("domain")
+allow_estimates = globals().get("allow_estimates")
 
 data = json.loads(json_text) if json_text else {}
 mats = data.get("materials", [])
@@ -73,14 +78,24 @@ else:
     if want in ("", "all", "any"):
         want = None
     n_top = int(top_n) if top_n else 5
-    drops = {"other method": 0, "no soil data": 0, "not verified": 0, "too weak": 0,
-             "too conductive": 0, "below min match": 0}
+    dom = norm(domain) or None
+    ok_levels = ("ready", "estimated") if allow_estimates else ("ready",)
+    drops = {"other method": 0, "not %s data" % dom: 0, "%s data incomplete" % dom: 0, "no soil data": 0,
+             "not verified": 0, "too weak": 0, "too conductive": 0, "below min match": 0}
     scored = []
     no_soil_names = []    # right method, but the paper gave no clay/silt/sand
     for m in mats:
         if want and want not in [norm(t) for t in (m.get("techniques") or [])]:
             drops["other method"] += 1
             continue
+        if dom:
+            r = (m.get("readiness") or {}).get(dom)
+            if not r:
+                drops["not %s data" % dom] += 1
+                continue
+            if r.get("level") not in ok_levels:
+                drops["%s data incomplete" % dom] += 1
+                continue
         s = m.get("soil") or {}
         if not s.get("match_ready"):
             drops["no soil data"] += 1
@@ -131,6 +146,8 @@ else:
 
     lines = ["Site soil (rescaled): clay %.0f / silt %.0f / sand %.0f %%" % site,
              "Method: %s" % (want or "all")]
+    if dom:
+        lines.append("Domain: %s (%s)" % (dom, "ready or estimated" if allow_estimates else "ready only"))
     if scored:
         lines.append("Best: %s, %.0f%% match" % (names[0], match_pct[0]))
         lines.append("To reach its soil: %s (points of the soil)" % correction[0])
