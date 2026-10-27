@@ -101,6 +101,7 @@
             <option value="flagged">Has flags</option>
           </select>
           <button onclick="clearFilters()" class="btn btn-secondary px-3 py-2 text-xs font-semibold uppercase">Reset</button>
+          <button id="review-btn" onclick="showReview(null)" class="btn btn-secondary px-3 py-2 text-xs font-semibold uppercase" title="Unverified values, re-extraction conflicts and records not found again">Review</button>
           <button id="reextract-btn" onclick="reextractPapers()" class="btn btn-secondary px-3 py-2 text-xs font-semibold uppercase" title="Run the current prompt again on every stored paper. Your verified values are kept. You review the result before anything changes.">Re-extract papers</button>
           <button onclick="clearAllData()" class="btn btn-secondary px-3 py-2 text-xs font-semibold uppercase text-rose-700">Clear all</button>
         </div>
@@ -1207,15 +1208,23 @@
       return rec.properties?.[k] ?? null;
     }
     function sameKey(a, b, k) { return PROP_BY_KEY[k] ? sameNum(a.properties?.[k], b.properties?.[k]) : keySig(a, k) === keySig(b, k); }
-    // copy one audited key (value + provenance) from one record to another
-    function copyKey(from, to, k) {
+    // everything that belongs to one audited key: its value field(s) and its provenance (a deep copy)
+    function keyFields(rec, k) {
       const dup = v => JSON.parse(JSON.stringify(v ?? null));
-      to.provenance[k] = dup(from.provenance[k]);
-      if (PROP_BY_KEY[k]) to.properties[k] = from.properties[k];
-      else if (k === 'composition') { to.composition = dup(from.composition); to.summary = dup(from.summary); }
-      else if (k === 'soil_fractions') ['soil_fractions', 'soil_fractions_source', 'soil_fractions_note', 'soil_texture_class'].forEach(f => { to[f] = dup(from[f]); });
-      else if (k === 'raw_data') to.raw_data = dup(from.raw_data);
+      const f = { provenance: dup(rec.provenance[k]) };
+      if (PROP_BY_KEY[k]) f.value = rec.properties[k] ?? null;
+      else if (k === 'composition') { f.composition = dup(rec.composition); f.summary = dup(rec.summary); }
+      else if (k === 'soil_fractions') ['soil_fractions', 'soil_fractions_source', 'soil_fractions_note', 'soil_texture_class'].forEach(n => { f[n] = dup(rec[n]); });
+      else if (k === 'raw_data') f.raw_data = dup(rec.raw_data);
+      return f;
     }
+    function applyKeyFields(to, k, f) {
+      to.provenance[k] = JSON.parse(JSON.stringify(f.provenance));
+      if (PROP_BY_KEY[k]) to.properties[k] = f.value;
+      else Object.keys(f).forEach(n => { if (n !== 'provenance') to[n] = JSON.parse(JSON.stringify(f[n])); });
+    }
+    // copy one audited key (value + provenance) from one record to another
+    function copyKey(from, to, k) { applyKeyFields(to, k, keyFields(from, k)); }
 
     function pairScore(o, n) {
       let s = 0;
@@ -1250,9 +1259,12 @@
           return;
         }
         if (trusted) {                                                      // differs from a checked value: keep the checked one
-          const newText = auditValueText(rec, k);
+          const newText = auditValueText(rec, k), newData = keyFields(rec, k);
           copyKey(old, rec, k);
-          rec.cross_references.push({ field: k, value: PROP_BY_KEY[k] ? newText : newText.slice(0, 200), source_doi: rec.paper.doi, note: 'Re-extraction gave a different value; the verified value was kept' });
+          // one open re-extraction conflict per field: a newer run replaces the older one
+          rec.cross_references = rec.cross_references.filter(c => !(c.field === k && (c.kind === 'reextract' || /^Re-extraction/.test(c.note || ''))));
+          rec.cross_references.push({ field: k, value: newText.slice(0, 300), new_data: newData, kind: 'reextract', source_doi: rec.paper.doi,
+                                      note: 'Re-extraction gave a different value; the verified value was kept' });
           st.conflicts.push(`${rec.id}: ${auditLabel(k)} kept ${auditValueText(old, k)}, new run gave ${newText}`);
         } else st.replaced.push(`${rec.id}: ${auditLabel(k)}`);
       });
@@ -1367,10 +1379,115 @@
         catalogue.splice(at < 0 ? 0 : Math.min(at, catalogue.length), 0, ...r.recs);
       });
       pendingReextract = null; forceBackupNext = true;
-      saveState(); closeSpecModal();
+      saveState();
       showNotification(`Applied ${R.length - skipped.length} paper(s); a backup was made first.` +
         (skipped.length ? ` Skipped (edited during the run, re-extract again): ${skipped.join('; ')}.` : '') +
-        ' New values are unverified: audit them, then Publish.');
+        ' Now review the changes.');
+      showReview(R.map(r => r.pid));
+    }
+
+    // ============================================================
+    // REVIEW: what still needs a decision after re-extraction (or any ingestion)
+    //   unverified values -> audit one by one, or verify a whole paper at once (asks first, logged as bulk)
+    //   re-extraction conflicts -> keep the verified value, or use the new one (then it is unverified)
+    //   records the re-extraction did not find again -> keep or delete
+    // ============================================================
+    let reviewPaperFilter = null;     // list of paper keys shown, or null for all
+    let reviewReturn = false;         // reopen the review when the audit modal closes
+    let reviewGroupKeys = [];         // paper keys in display order (buttons refer to them by index)
+
+    function paperKey(it) { return it.paper?.pdf_id || it.paper?.doi || it.paper?.title || 'unknown'; }
+    function reviewItems(it) {
+      return {
+        unverified: auditKeys(it).filter(k => !it.provenance[k].verified),
+        conflicts: (it.cross_references || []).map((c, i) => ({ ...c, i })).filter(c => c.kind === 'reextract' || /^Re-extraction/.test(c.note || '')),
+        orphan: (it.flags || []).includes('not_found_on_reextract')
+      };
+    }
+    function needsReview(it) { const r = reviewItems(it); return r.unverified.length + r.conflicts.length > 0 || r.orphan; }
+    function updateReviewButton() {
+      const b = document.getElementById('review-btn');
+      if (!b) return;
+      const n = catalogue.filter(needsReview).length;
+      b.innerText = `Review (${n})`;
+      b.classList.toggle('text-amber-700', n > 0);
+    }
+
+    function showReview(paperKeys) {
+      if (paperKeys !== undefined) reviewPaperFilter = paperKeys;
+      const recs = catalogue.filter(it => needsReview(it) && (!reviewPaperFilter || reviewPaperFilter.includes(paperKey(it))));
+      const groups = {};
+      recs.forEach(it => { (groups[paperKey(it)] = groups[paperKey(it)] || []).push(it); });
+      const keyBtn = (it, k) => `<button onclick="reviewAudit('${it.id}','${k}')" class="badge badge-pend hover:underline">${esc(auditLabel(k))}: ${esc(auditValueText(it, k).slice(0, 60))}</button>`;
+      const recHtml = it => {
+        const r = reviewItems(it);
+        return `<div class="border-t border-slate-100 pt-2 mt-2">
+          <div><strong>${esc(it.material_label)}</strong> <span class="text-slate-400">${esc(it.id)}${it.cited_ref ? ' &bull; ' + esc(it.cited_ref) : ''}</span></div>
+          ${r.orphan ? `<div class="mt-1 text-amber-800">Not found by the last re-extraction (the old record was kept).
+              <button onclick="reviewKeepRecord('${it.id}')" class="btn btn-secondary px-2 py-0.5 text-[10px] uppercase ml-1">Keep</button>
+              <button onclick="reviewDeleteRecord('${it.id}')" class="btn btn-secondary px-2 py-0.5 text-[10px] uppercase text-rose-700">Delete</button></div>` : ''}
+          ${r.unverified.length ? `<div class="mt-1 flex flex-wrap gap-1 items-center"><span class="text-slate-500">Unverified (click to audit):</span>${r.unverified.map(k => keyBtn(it, k)).join('')}</div>` : ''}
+          ${r.conflicts.map(c => `<div class="mt-1 bg-amber-50 border border-amber-200 rounded p-2">
+              <div><span class="text-slate-500">${esc(auditLabel(c.field))}</span></div>
+              <div>Verified: <strong>${esc(auditValueText(it, c.field))}</strong></div>
+              <div>New run: <strong>${esc(c.value)}</strong></div>
+              <div class="mt-1">
+                <button onclick="reviewResolve('${it.id}',${c.i},'keep')" class="btn btn-secondary px-2 py-0.5 text-[10px] uppercase">Keep verified</button>
+                ${c.new_data ? `<button onclick="reviewResolve('${it.id}',${c.i},'new')" class="btn btn-secondary px-2 py-0.5 text-[10px] uppercase">Use new (unverified)</button>`
+                             : '<span class="text-[10px] text-slate-500">(re-extract this paper again to be able to use the new value)</span>'}
+              </div></div>`).join('')}
+        </div>`;
+      };
+      document.getElementById('modal-spec-title').innerText = `REVIEW // ${recs.length} RECORD(S) NEED A DECISION`;
+      document.getElementById('modal-spec-body').innerHTML = `
+        <p class="text-slate-600">Values that came out the same as before are still verified and not listed. ${reviewPaperFilter ? `<button onclick="showReview(null)" class="underline">Show all papers</button>` : ''}</p>
+        ${(reviewGroupKeys = Object.keys(groups)).length ? Object.entries(groups).map(([pk, list], gi) => {
+          const n = list.reduce((a, it) => a + reviewItems(it).unverified.length, 0);
+          const p = list[0].paper || {};
+          return `<div class="border border-slate-200 rounded p-3">
+            <div class="flex flex-wrap justify-between gap-2 items-start">
+              <div><div class="font-bold">${esc(p.title || p.doi || pk)}</div><div class="text-slate-500">${esc(p.doi || '')} &bull; ${list.length} record(s), ${n} unverified value(s)</div></div>
+              ${n ? `<button onclick="reviewVerifyPaper(${gi})" class="btn btn-primary px-3 py-1 text-[10px] font-semibold uppercase">Verify all ${n} value(s) of this paper</button>` : ''}
+            </div>
+            ${list.map(recHtml).join('')}
+          </div>`;
+        }).join('') : '<p class="font-bold">Nothing left to review.</p>'}`;
+      document.getElementById('spec-sheet-modal').classList.remove('hidden');
+    }
+
+    function reviewAudit(id, k) { reviewReturn = true; closeSpecModal(); openAuditModal(id, k); }
+    function reviewVerifyPaper(gi) {
+      const pk = reviewGroupKeys[gi], list = catalogue.filter(it => paperKey(it) === pk);
+      const keys = list.flatMap(it => reviewItems(it).unverified.map(k => [it, k]));
+      if (!keys.length) return;
+      if (!confirm(`Mark ${keys.length} unverified value(s) in ${list.length} record(s) of "${list[0].paper?.title || pk}" as verified?\n\nOnly do this if you have checked them against the paper. They are recorded as a bulk verification.`)) return;
+      const who = (localStorage.getItem(VERIFIER_STORAGE) || 'unnamed verifier') + ' (bulk, after re-extraction)', now = new Date().toISOString();
+      keys.forEach(([it, k]) => Object.assign(it.provenance[k], { verified: true, verified_by: who, verified_date: now }));
+      saveState(); showReview();
+      showNotification(`Verified ${keys.length} value(s). Remember to publish.`);
+    }
+    function reviewResolve(id, i, choice) {
+      const it = catalogue.find(r => r.id === id), c = it?.cross_references?.[i];
+      if (!c) return;
+      if (choice === 'new' && c.new_data) {
+        applyKeyFields(it, c.field, c.new_data);
+        Object.assign(it.provenance[c.field], { verified: false, verified_by: null, verified_date: null, audit_note: 'Replaced by the re-extracted value' });
+        applyDerived(it); it.tags = deriveTags(it);
+      }
+      it.cross_references.splice(i, 1);
+      saveState(); showReview();
+    }
+    function reviewKeepRecord(id) {
+      const it = catalogue.find(r => r.id === id);
+      if (!it) return;
+      it.flags = (it.flags || []).filter(f => f !== 'not_found_on_reextract');
+      saveState(); showReview();
+    }
+    function reviewDeleteRecord(id) {
+      const it = catalogue.find(r => r.id === id);
+      if (!it || !confirm(`Delete "${it.material_label}"? The server keeps a backup.`)) return;
+      catalogue = catalogue.filter(r => r.id !== id);
+      saveState(); showReview();
     }
 
     // ============================================================
@@ -1393,6 +1510,7 @@
     }
 
     function renderStats() {
+      updateReviewButton();
       const n = catalogue.length;
       const cells = [
         ['Materials', n, ''],
@@ -1562,7 +1680,10 @@
       renderAuditTabs(item);
       loadAuditDetails(item, activeAuditKey);
     }
-    function closeAuditModal() { document.getElementById('audit-sheet-modal').classList.add('hidden'); activeAuditId = null; }
+    function closeAuditModal() {
+      document.getElementById('audit-sheet-modal').classList.add('hidden'); activeAuditId = null;
+      if (reviewReturn) { reviewReturn = false; showReview(); }
+    }
 
     function renderAuditTabs(item) {
       const keys = Object.keys(item.provenance);

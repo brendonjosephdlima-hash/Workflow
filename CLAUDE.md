@@ -94,6 +94,12 @@ Env vars: `GEMINI_API_KEY`, `GEMINI_MODELS`, `PORT`, `HOST`, `CATALOGUE_DATA`, `
   unpaired old -> kept + flag `not_found_on_reextract`. Nothing changes until Apply in the summary modal (reuses the
   Sheet modal); Apply forces a server backup (`force_backup` in the PUT body) and skips papers edited during the run.
   New keys (e.g. raw_data) are unverified, so such records leave the verified-only export until audited.
+- **Review** (`showReview(paperKeys|null)`, toolbar "Review (N)", opens automatically after Apply): per paper, records
+  with unverified keys (click -> audit modal, closing it returns to the review via `reviewReturn`), re-extraction
+  conflicts (`cross_references` with `kind:'reextract'` + `new_data` = `keyFields()` snapshot; "Use new" applies it
+  unverified, "Keep verified" drops it; old text-only conflicts can only be kept until the paper is re-extracted
+  again, which replaces them), and `not_found_on_reextract` records (Keep / Delete). "Verify all values of this
+  paper" asks first and logs `verified_by: '<name> (bulk, after re-extraction)'`.
 
 ### Record shape (main fields)
 `id`, `material_label`, `label_original` (pre-migration name), `label_note`, `cited_ref`, `technique_tags[]`, `technique_note`, `tags[]`,
