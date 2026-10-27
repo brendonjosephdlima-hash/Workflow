@@ -136,8 +136,8 @@ to repaste. Inputs/outputs are created by hand, named as in each script's header
 Method Value List: `3d_printed`, `cob`, `adobe`, `rammed_earth`, `compressed_earth_block`, `cast_earth`,
 `wattle_and_daub`, `earthbag`, `other`. Names are normalised (case, spaces, hyphens, slashes -> underscore).
 
-Known wiring slip (unconfirmed, .gh is binary): `04_match` may have an input named `min_lambda`; the script reads
-`max_lambda`, so that input would do nothing. Ask the user to check/rename.
+`04_match` inputs in the user's definition (2026-10-27): json_text, method, site_clay, site_silt, site_sand,
+only_verified, min_fc, max_lambda, top_n (no `min_match` input; optional). The old `min_lambda` name was fixed.
 
 ---
 
