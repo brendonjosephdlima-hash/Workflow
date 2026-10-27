@@ -61,11 +61,14 @@ It is the only copy of the extraction prompt (the browser never sees it).
 | `POST /api/extract` | calls Gemini with `prompt.txt`, model cascade (`GEMINI_MODELS`), PDF inline up to ~14 MB else text only (error if too big and no text) |
 | `POST /api/test` | tries the models |
 | `POST /api/publish` | uploads both export files to the Supabase Storage bucket |
+| `GET /api/inbox` | scans `INBOX_DIR` (default `data/inbox`, recursive, *.pdf) into `data/inbox.json` keyed by sha256 (= PDF store id; unchanged path+size+mtime not re-hashed); returns present papers + `in_catalogue` |
+| `POST /api/inbox/<id>/check` | imports the PDF into the store, runs `check_prompt.txt` via `run_models`, stores `check`, `verdict` (`recommended`/`partial`/`not_useful`/`not_relevant`), `domains`, `reason` (see `verdict()`) |
+| `POST /api/inbox/<id>/import`, `/status` | copy into the PDF store; set status `new`/`checked`/`extracted`/`skipped` |
 
 Guards: Host header must be localhost, every mutating request needs `X-Catalogue-Client: 1` and a same-origin
 `Origin`, `Content-Security-Policy: connect-src 'self'`. Gemini key goes in the `x-goog-api-key` header.
 Env vars: `GEMINI_API_KEY`, `GEMINI_MODELS`, `PORT`, `HOST`, `CATALOGUE_DATA`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`,
-`SUPABASE_BUCKET` (default `catalogue`). Default model IDs were chosen by the user and are unverified.
+`SUPABASE_BUCKET` (default `catalogue`), `INBOX_DIR`. `check_prompt.txt` is read at start like `prompt.txt`. Default model IDs were chosen by the user and are unverified.
 
 ### index.html: key functions
 - `normalizeMaterial(raw, paper, i)`: one model material -> record. `normTech` + `TECH_ALIASES` map techniques
@@ -85,6 +88,9 @@ Env vars: `GEMINI_API_KEY`, `GEMINI_MODELS`, `PORT`, `HOST`, `CATALOGUE_DATA`, `
 - `buildExportRecord`, `buildExportPayload`, `persistCatalogue`, `publishToCloud`, `renderTable` (REP/CALC/EST badges,
   "cited: <ref>" under the id), `openAuditModal`, `openSpecModal`.
 - `catalogueLoaded` blocks saving until the server copy was read.
+- **Inbox tab** (`loadInbox` on start, `renderInbox`, `checkInbox`, `extractInbox`, `extractRecommended`): sequential
+  check / import + `/api/extract` + `recordsFromResult` + `mergeOrInsert`, then `saveState` and `showReview(pdfIds)`.
+  `recordsFromResult` is shared with re-extraction.
 - **Re-extraction** (`reextractPapers(pdfIds?)`, button "Re-extract papers" + "Re-extract this paper" in the Sheet):
   re-runs `/api/extract` on stored PDFs (pdf_id only, no text) and reconciles per paper. `pairScore` pairs new with
   old records (equal values +3 / differing -1, composition pct matches, label/test-condition word overlap, technique,
@@ -234,6 +240,9 @@ re-extracting one known 3D-printing paper (needs Gemini).
 ---
 
 ## 11. Testing
+
+**When testing app.py, always set `GEMINI_API_KEY=x` (or mock `gemini_call`)**: `load_dotenv` reads the real `.env`, so an
+unmocked check/extract in a test calls Gemini with the user's key (happened once on 2026-10-27, a 16-byte fake PDF).
 
 No `tests/` folder yet. Quick checks that work:
 - `04_match.py` (and the other GH scripts) can be run with plain Python by `exec`-ing the file with injected inputs

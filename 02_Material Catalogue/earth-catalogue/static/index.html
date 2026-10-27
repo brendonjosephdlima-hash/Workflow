@@ -70,6 +70,7 @@
     <button onclick="switchTab('catalogue')" id="tab-btn-catalogue" class="nav-tab active px-4 py-2.5 hover:text-slate-900 whitespace-nowrap">Catalogue</button>
     <button onclick="switchTab('ingestion')" id="tab-btn-ingestion" class="nav-tab px-4 py-2.5 hover:text-slate-900 whitespace-nowrap">Paper Ingestion</button>
     <button onclick="switchTab('manual')" id="tab-btn-manual" class="nav-tab px-4 py-2.5 hover:text-slate-900 whitespace-nowrap">Add Material</button>
+    <button onclick="switchTab('inbox')" id="tab-btn-inbox" class="nav-tab px-4 py-2.5 hover:text-slate-900 whitespace-nowrap">Inbox <span id="inbox-count" class="badge badge-est hidden"></span></button>
     <button onclick="switchTab('settings')" id="tab-btn-settings" class="nav-tab px-4 py-2.5 hover:text-slate-900 whitespace-nowrap">Settings</button>
   </nav>
 
@@ -222,7 +223,33 @@
     </section>
 
     <!-- SETTINGS -->
-    <section id="tab-settings" class="flex-1 flex flex-col space-y-4 overflow-y-auto hidden">
+    <!-- INBOX -->
+    <section id="tab-inbox" class="flex-1 flex flex-col space-y-4 overflow-y-auto hidden">
+      <div class="border border-slate-200 rounded-lg p-4 bg-white shadow-sm space-y-3">
+        <div class="flex flex-wrap justify-between gap-3 items-start">
+          <div>
+            <div class="font-bold text-sm">Paper inbox</div>
+            <div class="text-[11px] text-slate-500 font-mono">Folder: <span id="inbox-dir">-</span></div>
+            <div class="text-[11px] text-slate-500 mt-1">Drop PDFs into the folder. <strong>Check</strong> asks Gemini what data each paper reports (no values).
+              <strong>Recommended</strong> = measured data that meets the minimum for Karamba (fc + E or a stress-strain curve + density) or Honeybee (conductivity + density).
+              Extracted records go to Review, unverified.</div>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <button onclick="loadInbox(true)" class="btn btn-secondary px-3 py-2 text-xs font-semibold uppercase">Rescan</button>
+            <button id="inbox-check-btn" onclick="checkNewInbox()" class="btn btn-secondary px-3 py-2 text-xs font-semibold uppercase">Check new</button>
+            <button id="inbox-extract-btn" onclick="extractRecommended()" class="btn btn-primary px-3 py-2 text-xs font-semibold uppercase">Extract recommended</button>
+          </div>
+        </div>
+      </div>
+      <div class="border border-slate-200 rounded-lg bg-white shadow-sm overflow-auto">
+        <table class="w-full text-[11px] font-mono">
+          <thead><tr class="bg-slate-100 text-left"><th class="p-2">Paper</th><th class="p-2">Verdict</th><th class="p-2">Reports</th><th class="p-2">Status</th><th class="p-2"></th></tr></thead>
+          <tbody id="inbox-body"><tr><td colspan="5" class="p-6 text-center text-slate-500">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tab-settings"class="flex-1 flex flex-col space-y-4 overflow-y-auto hidden">
       <div class="max-w-2xl mx-auto w-full border border-slate-200 rounded-lg p-6 bg-white shadow-sm space-y-5 text-xs font-mono">
         <div class="border-b border-slate-200 pb-3">
           <h2 class="font-bold text-slate-900 text-sm uppercase tracking-wider font-sans">Settings</h2>
@@ -785,6 +812,7 @@
         let migrated = 0;
         catalogue.forEach(r => { if (migrateRecord(r)) migrated++; });
         if (migrated) { saveState(); showNotification(`Tidied ${migrated} record(s): shorter names, and 3D-printed mixes now carry only the 3D printed tag. Remember to publish.`); }
+        loadInbox(false);
       } catch (e) {
         catalogueLoaded = false;
         setSaveStatus('offline', e.message);
@@ -819,7 +847,7 @@
       showNotification._t = setTimeout(() => toast.classList.add('hidden'), 4500);
     }
     function switchTab(tabId) {
-      ['catalogue', 'ingestion', 'manual', 'settings'].forEach(id => {
+      ['catalogue', 'ingestion', 'manual', 'inbox', 'settings'].forEach(id => {
         document.getElementById(`tab-btn-${id}`)?.classList.toggle('active', id === tabId);
         document.getElementById(`tab-${id}`)?.classList.toggle('hidden', id !== tabId);
       });
@@ -1299,6 +1327,20 @@
       return out;
     }
 
+    // one /api/extract result for a stored PDF -> normalized records (fallback: paper fields known from before)
+    function recordsFromResult(raw, pid, fallback) {
+      raw = raw || {};
+      const list = Array.isArray(raw.materials) ? raw.materials : [];
+      if (!list.length) throw new Error('the model returned no materials');
+      const p0 = fallback || {};
+      const paper = { title: raw.title || p0.title, doi: raw.doi || p0.doi, year: raw.year ?? p0.year, soil_origin: raw.soil_origin || p0.soil_origin };
+      return list.map((m, k) => {
+        const r = normalizeMaterial(m, paper, k);
+        r.paper.pdf_id = pid; Object.values(r.provenance).forEach(p => { p.pdf_id = pid; });
+        return r;
+      });
+    }
+
     // pdfIds: list of stored PDF ids, or nothing for every stored paper in the catalogue
     async function reextractPapers(pdfIds) {
       if (reextractRunning) return;
@@ -1320,16 +1362,8 @@
           try {
             const res = await api('/api/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ text: '', model, pdf_id: pid, images: [] }) });
-            const j = await res.json(), raw = j.result || {};
-            const list = Array.isArray(raw.materials) ? raw.materials : [];
-            if (!list.length) throw new Error('the model returned no materials');
-            const p0 = olds[0]?.paper || {};
-            const paper = { title: raw.title || p0.title, doi: raw.doi || p0.doi, year: raw.year ?? p0.year, soil_origin: raw.soil_origin || p0.soil_origin };
-            const news = list.map((m, k) => {
-              const r = normalizeMaterial(m, paper, k);
-              r.paper.pdf_id = pid; Object.values(r.provenance).forEach(p => { p.pdf_id = pid; });
-              return r;
-            });
+            const j = await res.json();
+            const news = recordsFromResult(j.result, pid, olds[0]?.paper);
             results.push({ pid, title, snapshot: JSON.stringify(olds), olds, recs: reconcilePaper(olds, news, st), st, warnings: j.warnings || [] });
           } catch (e) {
             results.push({ pid, title, olds, st, error: e.message || String(e) });
@@ -1488,6 +1522,129 @@
       if (!it || !confirm(`Delete "${it.material_label}"? The server keeps a backup.`)) return;
       catalogue = catalogue.filter(r => r.id !== id);
       saveState(); showReview();
+    }
+
+    // ============================================================
+    // INBOX: PDFs dropped into the inbox folder (server side) -> quick check -> extract -> Review
+    // The verdict is computed on the server from the check (see verdict() in app.py).
+    // ============================================================
+    let inbox = [];
+    let inboxBusy = false;
+    const VERDICTS = { recommended: ['Recommended', 'badge-ok'], partial: ['Partial', 'badge-est'], not_useful: ['Not useful', 'badge-pend'], not_relevant: ['Not relevant', 'badge-pend'] };
+    const CHECK_ITEMS = [['compressive_strength', 'fc'], ['elastic_modulus', 'E'], ['dry_density', 'ρ'], ['poisson_ratio', 'ν'],
+                         ['tensile_or_flexural_strength', 'ft/ff'], ['thermal_conductivity', 'λ'], ['specific_heat', 'cp'], ['soil_grading', 'grading']];
+    const CHECK_PARTIAL = { curve_only: 'curve only', specimen_mass_and_size: 'from mass + size', diffusivity_only: 'from diffusivity' };
+
+    const inboxNew = () => inbox.filter(p => !p.check && !p.in_catalogue && p.status !== 'skipped');
+    const inboxRecommended = () => inbox.filter(p => p.verdict === 'recommended' && !p.in_catalogue && !['extracted', 'skipped'].includes(p.status));
+
+    async function loadInbox(announce) {
+      try {
+        const j = await (await api('/api/inbox')).json();
+        inbox = j.papers || [];
+        document.getElementById('inbox-dir').textContent = j.exists ? j.dir : `${j.dir} (FOLDER NOT FOUND: set INBOX_DIR in .env and restart)`;
+        renderInbox();
+        const n = inboxNew().length;
+        if (n && announce) showNotification(`${n} new paper(s) in the inbox. Open the Inbox tab and click Check new.`);
+      } catch (e) {
+        document.getElementById('inbox-dir').textContent = 'Inbox unavailable: ' + e.message;
+      }
+    }
+
+    function renderInbox() {
+      const nNew = inboxNew().length, nRec = inboxRecommended().length;
+      const cnt = document.getElementById('inbox-count');
+      cnt.textContent = nNew; cnt.classList.toggle('hidden', !nNew);
+      if (!inboxBusy) {
+        document.getElementById('inbox-check-btn').innerText = `Check new (${nNew})`;
+        document.getElementById('inbox-extract-btn').innerText = `Extract recommended (${nRec})`;
+      }
+      const order = p => p.in_catalogue || p.status === 'extracted' ? 4 : p.status === 'skipped' ? 5 : !p.check ? 0 : p.verdict === 'recommended' ? 1 : p.verdict === 'partial' ? 2 : 3;
+      const rows = [...inbox].sort((a, b) => order(a) - order(b) || String(a.name).localeCompare(b.name));
+      document.getElementById('inbox-body').innerHTML = rows.length ? rows.map(p => {
+        const c = p.check || {}, r = c.reports || {}, v = VERDICTS[p.verdict];
+        const chips = p.check ? CHECK_ITEMS.map(([k, l]) => {
+          const x = r[k];
+          return x === 'yes' ? `<span class="badge badge-ok">${l}</span>`
+               : CHECK_PARTIAL[x] ? `<span class="badge badge-est" title="${CHECK_PARTIAL[x]}">${l}: ${CHECK_PARTIAL[x]}</span>`
+               : `<span class="badge text-slate-400">${l}</span>`;
+        }).join(' ') : '<span class="text-slate-400">not checked</span>';
+        const status = p.in_catalogue ? 'in catalogue (use Re-extract)' : p.status === 'extracted' ? 'extracted' : p.status === 'skipped' ? 'skipped' : p.check ? 'checked' : 'new';
+        const can = !p.in_catalogue && p.status !== 'extracted';
+        return `<tr class="border-b border-slate-100 align-top ${p.status === 'skipped' || !can ? 'opacity-60' : ''}">
+          <td class="p-2 max-w-[320px]"><div class="font-bold break-words">${esc(c.title || p.name)}</div>
+            <div class="text-slate-500 break-all">${esc(p.name)}${c.doi ? ' &bull; ' + esc(c.doi) : ''}${c.year ? ' &bull; ' + esc(c.year) : ''}</div>
+            ${c.summary ? `<div class="text-slate-600 mt-1">${esc(c.summary)}</div>` : ''}</td>
+          <td class="p-2">${v ? `<span class="badge ${v[1]}">${v[0]}</span>` : ''}<div class="text-slate-500 mt-1">${esc(p.reason || '')}</div>
+            ${c.techniques?.length ? `<div class="mt-1">${c.techniques.map(t => `<span class="tag">${esc(TECHNIQUES[t] || t)}</span>`).join(' ')}</div>` : ''}</td>
+          <td class="p-2"><div class="flex flex-wrap gap-1">${chips}</div>${c.where ? `<div class="text-slate-500 mt-1">${esc(c.where)}</div>` : ''}
+            ${c.n_mixes ? `<div class="text-slate-500">${esc(c.n_mixes)} mix(es), ${esc((c.data_origin || '').replace(/_/g, ' '))}</div>` : ''}</td>
+          <td class="p-2 whitespace-nowrap">${esc(status)}</td>
+          <td class="p-2 space-y-1 whitespace-nowrap">
+            ${can && !p.check ? `<button onclick="checkInbox(['${p.id}'])" class="btn btn-secondary w-full px-2 py-0.5 text-[10px] uppercase">Check</button>` : ''}
+            ${can ? `<button onclick="extractInbox(['${p.id}'])" class="btn btn-secondary w-full px-2 py-0.5 text-[10px] uppercase">Extract</button>` : ''}
+            ${can ? `<button onclick="setInboxStatus('${p.id}','${p.status === 'skipped' ? (p.check ? 'checked' : 'new') : 'skipped'}')" class="btn btn-secondary w-full px-2 py-0.5 text-[10px] uppercase">${p.status === 'skipped' ? 'Unskip' : 'Skip'}</button>` : ''}
+          </td></tr>`;
+      }).join('') : '<tr><td colspan="5" class="p-6 text-center text-slate-500">No PDFs in the inbox folder.</td></tr>';
+    }
+
+    async function setInboxStatus(id, status) {
+      try { await api(`/api/inbox/${id}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) }); }
+      catch (e) { showNotification(e.message); return; }
+      const p = inbox.find(x => x.id === id); if (p) p.status = status;
+      renderInbox();
+    }
+
+    async function checkNewInbox() { await checkInbox(inboxNew().map(p => p.id)); }
+    async function checkInbox(ids) {
+      if (inboxBusy || !ids.length) { if (!ids.length) showNotification('No unchecked papers in the inbox.'); return; }
+      inboxBusy = true;
+      const btn = document.getElementById('inbox-check-btn'), failed = [];
+      try {
+        for (let i = 0; i < ids.length; i++) {
+          btn.innerText = `Checking ${i + 1}/${ids.length}...`;
+          try {
+            const e = await (await api(`/api/inbox/${ids[i]}/check`, { method: 'POST' })).json();
+            const k = inbox.findIndex(x => x.id === ids[i]); if (k >= 0) inbox[k] = { ...inbox[k], ...e };
+          } catch (e) { failed.push(`${inbox.find(x => x.id === ids[i])?.name}: ${e.message}`); }
+          renderInbox();
+        }
+      } finally { inboxBusy = false; renderInbox(); }
+      showNotification(`Checked ${ids.length - failed.length} paper(s); ${inboxRecommended().length} recommended.` + (failed.length ? ` Failed: ${failed.join('; ')}` : ''));
+    }
+
+    async function extractRecommended() {
+      const ids = inboxRecommended().map(p => p.id);
+      if (!ids.length) { showNotification('No recommended papers to extract. Check new papers first.'); return; }
+      if (!confirm(`Extract ${ids.length} recommended paper(s)?\n\nOne Gemini call each, one after another. The new records go to Review, unverified.`)) return;
+      await extractInbox(ids, true);
+    }
+    async function extractInbox(ids, confirmed) {
+      if (inboxBusy) return;
+      if (!catalogueLoaded) { showNotification('Wait until the catalogue has loaded.'); return; }
+      if (!confirmed && !confirm(`Extract "${inbox.find(x => x.id === ids[0])?.name}"? The new records go to Review, unverified.`)) return;
+      const model = document.getElementById('ingestion-llm-provider')?.value || 'cascade';
+      inboxBusy = true;
+      const btn = document.getElementById('inbox-extract-btn'), done = [], failed = [];
+      let added = 0, merged = 0;
+      try {
+        for (let i = 0; i < ids.length; i++) {
+          const p = inbox.find(x => x.id === ids[i]);
+          btn.innerText = `Extracting ${i + 1}/${ids.length}...`;
+          try {
+            await api(`/api/inbox/${ids[i]}/import`, { method: 'POST' });
+            const j = await (await api('/api/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: '', model, pdf_id: ids[i], images: [] }) })).json();
+            const recs = recordsFromResult(j.result, ids[i], { title: p?.check?.title, doi: p?.check?.doi, year: p?.check?.year });
+            const baseKey = Date.now().toString(36).toUpperCase();
+            recs.forEach((rec, k) => { mergeOrInsert(rec, baseKey, k) === 'inserted' ? added++ : merged++; });
+            await setInboxStatus(ids[i], 'extracted');
+            done.push(ids[i]);
+          } catch (e) { failed.push(`${p?.name || ids[i]}: ${e.message}`); }
+        }
+      } finally { inboxBusy = false; renderInbox(); }
+      if (done.length) { saveState(); showReview(done); }
+      showNotification(`Extracted ${done.length} paper(s): ${added} new record(s), ${merged} merged.` + (failed.length ? ` Failed: ${failed.join('; ')}` : '') + (done.length ? ' Review them, then Publish.' : ''));
     }
 
     // ============================================================

@@ -18,6 +18,14 @@ Open http://127.0.0.1:8000 (not the HTML file directly).
     data/backups/       rolling copies of catalogue.json (always taken before a deletion)
     data/exports/       Grasshopper JSON, rewritten on every save
 
+## Inbox: drop papers in a folder
+Set `INBOX_DIR` in `.env` (default `data/inbox`) and restart. When the app opens it lists PDFs it has not seen
+(files are recognised by content, so renaming or moving one does not make it new).
+In the **Inbox** tab: **Check new** asks Gemini what each paper reports (no values; prompt in `check_prompt.txt`).
+**Recommended** = the paper measures its own data and meets the minimum for Karamba (fc + E or a stress-strain curve
++ density or specimen mass and size) or Honeybee (conductivity + density). **Extract recommended** extracts those one
+after another; the records go to **Review**, unverified. Papers already in the catalogue are skipped (use Re-extract).
+
 ## After changing prompt.txt: re-extract
 Restart `python app.py`, then click **Re-extract papers** in the catalogue (or "Re-extract this paper" in a
 material's Sheet). Every stored PDF is read again with the new prompt. You get a summary before anything changes:

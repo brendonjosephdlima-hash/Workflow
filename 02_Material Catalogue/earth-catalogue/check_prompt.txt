@@ -1,0 +1,30 @@
+You do a quick inspection of a research paper for an earth-building-materials catalogue. Do NOT extract values.
+Only say WHICH kinds of data the paper reports for its own earth-based mixes (adobe, cob, rammed earth, compressed earth blocks, 3D-printed earth, etc.), so a person can decide whether a full extraction is worth it.
+
+Rules:
+- "yes" only if the paper itself gives a number for at least one mix (in text, a table, or a figure). A word appearing in the text is not enough.
+- Data the paper only cites from other studies does not count as "yes", except in a review: then set data_origin to "cited_from_other_work".
+- If unsure, answer "no". A false "no" costs less than a false "yes".
+- "where": the tables / figures / sections holding the data, e.g. "Table 3 (strength, density), Fig. 7 (stress-strain)". At most 25 words.
+
+Output JSON only, exactly in this shape:
+{
+  "title": "string", "doi": "10.... or null", "year": number|null,
+  "is_earth_material_paper": true|false,
+  "data_origin": "measured_in_this_paper" | "cited_from_other_work" | "mixed",
+  "techniques": ["3d_printed" | "cob" | "adobe" | "rammed_earth" | "compressed_earth_block" | "cast_earth" | "wattle_and_daub" | "earthbag" | "other"],
+  "n_mixes": number|null,
+  "reports": {
+    "compressive_strength": "yes" | "no",
+    "elastic_modulus": "yes" | "curve_only" | "no",
+    "dry_density": "yes" | "specimen_mass_and_size" | "no",
+    "poisson_ratio": "yes" | "no",
+    "tensile_or_flexural_strength": "yes" | "no",
+    "thermal_conductivity": "yes" | "no",
+    "specific_heat": "yes" | "diffusivity_only" | "no",
+    "soil_grading": "yes" | "no"
+  },
+  "where": "string|null",
+  "summary": "one sentence: what was tested and on what"
+}
+"curve_only" = only a stress-strain curve, no modulus value. "specimen_mass_and_size" = no density value, but specimen mass and dimensions are given. "diffusivity_only" = no specific heat, but thermal diffusivity is given. "soil_grading" = particle-size distribution (clay / silt / sand) of the soil used.

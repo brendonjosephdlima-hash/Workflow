@@ -72,6 +72,14 @@ for d in (PDF_DIR, BACKUP_DIR, EXPORT_ALL.parent):
     d.mkdir(parents=True, exist_ok=True)
 
 PROMPT = (BASE / "prompt.txt").read_text(encoding="utf-8")
+CHECK_PROMPT = (BASE / "check_prompt.txt").read_text(encoding="utf-8")
+
+# Inbox: a folder you drop PDFs into. The app lists new ones, gives each a quick check, and extracts on request.
+INBOX_DEFAULT = DATA / "inbox"
+INBOX_DIR = Path(os.environ.get("INBOX_DIR", INBOX_DEFAULT)).expanduser().resolve()
+INBOX_FILE = DATA / "inbox.json"
+if INBOX_DIR == INBOX_DEFAULT.resolve():
+    INBOX_DIR.mkdir(parents=True, exist_ok=True)   # never create a folder you named yourself (a typo would hide)
 PDF_ID = re.compile(r"^[0-9a-f]{64}$")
 lock = threading.Lock()
 
@@ -134,6 +142,7 @@ def status():
         "data_dir": str(DATA),
         "cloud_configured": bool(SUPABASE_URL and SUPABASE_KEY),
         "cloud_urls": cloud_urls() if SUPABASE_URL else None,
+        "inbox_dir": str(INBOX_DIR),
     })
 
 
@@ -369,6 +378,199 @@ def extract():
     return err(f"All models failed. Last error: {last}", 502)
 
 
+def run_models(parts: list, system: str):
+    """Try the configured models in order; return (parsed JSON, model used)."""
+    last = None
+    for m in MODELS:
+        try:
+            return parse_model_json(gemini_call(m, parts, system, True)), m
+        except json.JSONDecodeError:
+            last = RuntimeError(f"{m} returned text that was not valid JSON")
+        except RuntimeError as e:
+            last = e
+        app.logger.warning("call failed on %s: %s", m, last)
+        time.sleep(0.4)
+    raise RuntimeError(f"All models failed. Last error: {last}")
+
+
+# ----------------------------------------------------------------------------
+# Inbox: folder scan, quick check, import into the PDF store
+# inbox.json: { sha256: {name, path (relative to INBOX_DIR), size, mtime, status, check, verdict, ...} }
+#   status: new -> checked -> extracted, or skipped
+# ----------------------------------------------------------------------------
+def read_inbox() -> dict:
+    if not INBOX_FILE.exists():
+        return {}
+    try:
+        d = json.loads(INBOX_FILE.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def sha256_file(p: Path) -> str:
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def scan_inbox() -> dict:
+    """Add new PDFs to inbox.json. Files are known by content, so renaming or moving one is not 'new'."""
+    inbox = read_inbox()
+    by_path = {e.get("path"): k for k, e in inbox.items()}
+    seen = set()
+    if INBOX_DIR.is_dir():
+        for p in sorted(INBOX_DIR.rglob("*")):
+            if not p.is_file() or p.suffix.lower() != ".pdf":
+                continue
+            st, rel = p.stat(), p.relative_to(INBOX_DIR).as_posix()
+            k = by_path.get(rel)
+            if k and inbox[k].get("size") == st.st_size and inbox[k].get("mtime") == int(st.st_mtime):
+                seen.add(k)
+                continue                                   # unchanged: no need to hash again
+            h = sha256_file(p)
+            e = inbox.setdefault(h, {"status": "new", "found_at": datetime.now().isoformat(timespec="seconds")})
+            e.update(name=p.name, path=rel, size=st.st_size, mtime=int(st.st_mtime))
+            seen.add(h)
+    for k, e in inbox.items():
+        e["present"] = k in seen
+    atomic_write(INBOX_FILE, inbox)
+    return inbox
+
+
+def inbox_pdf_path(pid: str, inbox: dict) -> Path:
+    e = inbox.get(pid)
+    if not e or not e.get("present"):
+        raise FileNotFoundError("That PDF is no longer in the inbox folder. Rescan.")
+    p = (INBOX_DIR / e["path"]).resolve()
+    if INBOX_DIR not in p.parents:
+        raise FileNotFoundError("Path outside the inbox folder.")
+    return p
+
+
+def import_inbox_pdf(pid: str, inbox: dict) -> Path:
+    """Copy an inbox PDF into the content-addressed store (data/pdfs). Returns the stored path."""
+    dest = PDF_DIR / f"{pid}.pdf"
+    if dest.exists():
+        return dest
+    src = inbox_pdf_path(pid, inbox)
+    blob = src.read_bytes()
+    if hashlib.sha256(blob).hexdigest() != pid:
+        raise FileNotFoundError("The file changed since the last scan. Rescan.")
+    tmp = dest.with_suffix(".tmp")
+    tmp.write_bytes(blob)
+    os.replace(tmp, dest)
+    return dest
+
+
+def verdict(c: dict):
+    """recommended = measured data that meets the minimum for at least one domain (see index.html DOMAINS)."""
+    r = c.get("reports") or {}
+    has = lambda k, ok=("yes",): r.get(k) in ok
+    rho = has("dry_density", ("yes", "specimen_mass_and_size"))
+    need = {
+        "mechanical": [("fc", has("compressive_strength")), ("E", has("elastic_modulus", ("yes", "curve_only"))), ("density", rho)],
+        "thermal": [("conductivity", has("thermal_conductivity")), ("density", rho)],
+    }
+    # a paper belongs to a domain when it reports that domain's own values (density alone belongs to neither)
+    touches = {"mechanical": has("compressive_strength") or has("elastic_modulus", ("yes", "curve_only")),
+               "thermal": has("thermal_conductivity") or has("specific_heat", ("yes", "diffusivity_only"))}
+    met = [d for d, items in need.items() if all(ok for _, ok in items)]
+    measured = c.get("data_origin") in ("measured_in_this_paper", "mixed")
+    notes = []
+    for d, items in need.items():
+        if touches[d]:
+            missing = [n for n, ok in items if not ok]
+            notes.append(f"{d}: " + ("complete" if not missing else "missing " + ", ".join(missing)))
+    if has("soil_grading"):
+        notes.append("soil grading")
+    if c.get("is_earth_material_paper") is False:
+        return "not_relevant", met, "not about earth building materials"
+    if not measured:
+        notes.insert(0, "data only cited from other studies")
+    if measured and met:
+        v = "recommended"
+    elif any(x in ("yes", "curve_only", "specimen_mass_and_size", "diffusivity_only") for x in r.values()):
+        v = "partial"
+    else:
+        v = "not_useful"
+    return v, met, "; ".join(notes) or "no relevant data found"
+
+
+def inbox_view(inbox: dict) -> list:
+    old = read_records() or []
+    in_cat = {(r.get("paper") or {}).get("pdf_id") for r in old}
+    return [dict(e, id=k, in_catalogue=k in in_cat) for k, e in inbox.items() if e.get("present")]
+
+
+@app.get("/api/inbox")
+def get_inbox():
+    with lock:
+        inbox = scan_inbox()
+    return jsonify({"dir": str(INBOX_DIR), "exists": INBOX_DIR.is_dir(), "papers": inbox_view(inbox)})
+
+
+@app.post("/api/inbox/<pid>/import")
+def inbox_import(pid):
+    if not PDF_ID.match(pid):
+        return err("Bad id")
+    with lock:
+        try:
+            import_inbox_pdf(pid, read_inbox())
+        except FileNotFoundError as e:
+            return err(str(e), 404)
+    return jsonify({"pdf_id": pid})
+
+
+@app.post("/api/inbox/<pid>/check")
+def inbox_check(pid):
+    if not PDF_ID.match(pid):
+        return err("Bad id")
+    with lock:
+        inbox = read_inbox()
+        try:
+            path = import_inbox_pdf(pid, inbox)
+        except FileNotFoundError as e:
+            return err(str(e), 404)
+    blob = path.read_bytes()
+    if len(blob) > MAX_INLINE_PDF:
+        return err(f"PDF is over {MAX_INLINE_PDF // 1024 // 1024} MB; check it by hand and use Extract from the Paper Ingestion tab.")
+    parts = [{"inlineData": {"mimeType": "application/pdf", "data": base64.b64encode(blob).decode()}},
+             {"text": "Inspect the attached paper."}]
+    try:
+        check, model = run_models(parts, CHECK_PROMPT)
+    except RuntimeError as e:
+        return err(str(e), 502)
+    v, met, why = verdict(check)
+    with lock:
+        inbox = read_inbox()
+        e = inbox.get(pid)
+        if e is None:
+            return err("Not in the inbox any more. Rescan.", 404)
+        e.update(check=check, verdict=v, domains=met, reason=why, model=model,
+                 checked_at=datetime.now().isoformat(timespec="seconds"))
+        if e.get("status") == "new":
+            e["status"] = "checked"
+        atomic_write(INBOX_FILE, inbox)
+    return jsonify(dict(e, id=pid))
+
+
+@app.post("/api/inbox/<pid>/status")
+def inbox_status(pid):
+    s = (request.get_json(silent=True) or {}).get("status")
+    if not PDF_ID.match(pid) or s not in ("new", "checked", "extracted", "skipped"):
+        return err("Bad id or status")
+    with lock:
+        inbox = read_inbox()
+        if pid not in inbox:
+            return err("Not in the inbox.", 404)
+        inbox[pid]["status"] = s
+        atomic_write(INBOX_FILE, inbox)
+    return jsonify({"ok": True})
+
+
 @app.post("/api/test")
 def test_connection():
     last = None
@@ -386,6 +588,7 @@ if __name__ == "__main__":
     print(f"  API key     : {'loaded' if api_key() else 'MISSING (set GEMINI_API_KEY in .env)'}")
     print(f"  models      : {', '.join(MODELS)}")
     print(f"  Grasshopper : http://{HOST}:{PORT}/export.json")
+    print(f"  Inbox       : {INBOX_DIR}" + ("" if INBOX_DIR.is_dir() else "   (FOLDER NOT FOUND: check INBOX_DIR in .env)"))
     print(f"  Cloud       : {'configured (' + SUPABASE_BUCKET + ')' if SUPABASE_URL and SUPABASE_KEY else 'not configured (optional)'}\n")
     if HOST not in ("127.0.0.1", "localhost", "::1"):
         print("  WARNING: bound to a non-local address. Anyone who can reach it can spend your API quota.\n")
