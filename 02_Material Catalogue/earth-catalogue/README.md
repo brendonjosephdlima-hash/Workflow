@@ -18,6 +18,12 @@ Open http://127.0.0.1:8000 (not the HTML file directly).
     data/backups/       rolling copies of catalogue.json (always taken before a deletion)
     data/exports/       Grasshopper JSON, rewritten on every save
 
+## After changing prompt.txt: re-extract
+Restart `python app.py`, then click **Re-extract papers** in the catalogue (or "Re-extract this paper" in a
+material's Sheet). Every stored PDF is read again with the new prompt. You get a summary before anything changes:
+values that come out the same stay verified, a value that differs from one you verified is NOT replaced (the new
+one is logged as a conflict), and new values arrive unverified. Apply makes a backup first. Then audit and Publish.
+
 To move the catalogue to another machine, copy the whole `data/` folder.
 The in-app "Backup" button does NOT include the PDFs.
 

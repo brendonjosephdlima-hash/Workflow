@@ -101,6 +101,7 @@
             <option value="flagged">Has flags</option>
           </select>
           <button onclick="clearFilters()" class="btn btn-secondary px-3 py-2 text-xs font-semibold uppercase">Reset</button>
+          <button id="reextract-btn" onclick="reextractPapers()" class="btn btn-secondary px-3 py-2 text-xs font-semibold uppercase" title="Run the current prompt again on every stored paper. Your verified values are kept. You review the result before anything changes.">Re-extract papers</button>
           <button onclick="clearAllData()" class="btn btn-secondary px-3 py-2 text-xs font-semibold uppercase text-rose-700">Clear all</button>
         </div>
       </div>
@@ -699,6 +700,7 @@
     let currentPdf = null;            // { id (server hash), name, pages, sendWhole }
     let currentUploadedImages = [];
     let catalogueLoaded = false;      // never save before the server copy has been read
+    let forceBackupNext = false;      // next save asks the server for a backup first (set before re-extraction is applied)
     let activeAuditId = null;
     let activeAuditKey = null;
 
@@ -733,10 +735,12 @@
     }
     async function persistCatalogue() {
       if (!catalogueLoaded) { setSaveStatus('error', 'Catalogue was never loaded from the server, so saving is disabled.'); return; }
+      const force = forceBackupNext; forceBackupNext = false;
       try {
         await api('/api/catalogue', {
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            force_backup: force,
             records: catalogue,
             export_all: buildExportPayload(catalogue, false),
             export_verified: buildExportPayload(catalogue.filter(isFullyVerified), true)
@@ -1173,6 +1177,203 @@
     }
 
     // ============================================================
+    // RE-EXTRACTION OF STORED PAPERS
+    // Runs the current prompt again on the stored PDFs and reconciles the result with the existing records:
+    //  - each new material is paired with the most similar old record of the same paper (equal values, label
+    //    words, composition) and takes over its id
+    //  - a value equal to the old one keeps its verification
+    //  - a value that differs from a VERIFIED old value does not replace it (logged under cross_references);
+    //    unverified old values are simply replaced
+    //  - verified old values that the new run did not find are kept
+    //  - old records without a partner are kept and flagged; new materials without a partner are added unverified
+    // Nothing changes until the user clicks Apply in the summary. The server makes a backup before applying.
+    // ============================================================
+    let pendingReextract = null;
+    let reextractRunning = false;
+
+    function wordSet(s) { return new Set(String(s || '').toLowerCase().replace(/[^a-z0-9.%]+/g, ' ').split(' ').filter(Boolean)); }
+    function jaccard(a, b) {
+      const A = wordSet(a), B = wordSet(b);
+      if (!A.size || !B.size) return 0;
+      let i = 0; A.forEach(t => { if (B.has(t)) i++; });
+      return i / (A.size + B.size - i);
+    }
+    function sameNum(a, b) { return a != null && b != null && Math.abs(a - b) <= 0.005 * Math.max(Math.abs(a), Math.abs(b), 1e-9); }
+    // comparable form of an audited key that is not a single number
+    function keySig(rec, k) {
+      if (k === 'composition') return JSON.stringify((rec.composition || []).map(c => [String(c.component || '').toLowerCase(), c.pct]).sort());
+      if (k === 'soil_fractions') return JSON.stringify(SOIL_KEYS.map(s => rec.soil_fractions?.[s] ?? null));
+      if (k === 'raw_data') return JSON.stringify(rec.raw_data || null);
+      return rec.properties?.[k] ?? null;
+    }
+    function sameKey(a, b, k) { return PROP_BY_KEY[k] ? sameNum(a.properties?.[k], b.properties?.[k]) : keySig(a, k) === keySig(b, k); }
+    // copy one audited key (value + provenance) from one record to another
+    function copyKey(from, to, k) {
+      const dup = v => JSON.parse(JSON.stringify(v ?? null));
+      to.provenance[k] = dup(from.provenance[k]);
+      if (PROP_BY_KEY[k]) to.properties[k] = from.properties[k];
+      else if (k === 'composition') { to.composition = dup(from.composition); to.summary = dup(from.summary); }
+      else if (k === 'soil_fractions') ['soil_fractions', 'soil_fractions_source', 'soil_fractions_note', 'soil_texture_class'].forEach(f => { to[f] = dup(from[f]); });
+      else if (k === 'raw_data') to.raw_data = dup(from.raw_data);
+    }
+
+    function pairScore(o, n) {
+      let s = 0;
+      PROPS.forEach(p => {
+        const a = o.properties?.[p.key], b = n.properties?.[p.key];
+        if (a == null || b == null || o.provenance?.[p.key]?.type === 'derived' || n.provenance?.[p.key]?.type === 'derived') return;
+        s += sameNum(a, b) ? 3 : -1;
+      });
+      (n.composition || []).forEach(c => { if (c.pct != null && (o.composition || []).some(d => d.category === c.category && sameNum(d.pct, c.pct))) s += 1; });
+      s += 2 * Math.max(jaccard(o.material_label, n.material_label), jaccard(o.label_original, n.material_label));
+      if ((o.technique_tags || []).some(t => (n.technique_tags || []).includes(t))) s += 0.5;
+      if (o.cited_ref && o.cited_ref === n.cited_ref) s += 1;
+      s += jaccard(o.test_conditions, n.test_conditions);
+      return s;
+    }
+
+    // carry the user's verification work from an old record into its re-extracted partner
+    function carryOver(old, rec, st) {
+      rec.id = old.id; rec.added_at = old.added_at; rec.reextracted_at = new Date().toISOString();
+      rec.cross_references = JSON.parse(JSON.stringify(old.cross_references || []));
+      Object.keys(old.provenance || {}).forEach(k => {
+        const op = old.provenance[k];
+        if (op.type === 'derived') return;                                // recomputed by applyDerived
+        const np = rec.provenance[k];
+        const trusted = op.verified || op.type === 'manual';
+        if (!np || np.type === 'derived') {                                // the new run did not report it
+          if (trusted) { copyKey(old, rec, k); st.restored.push(`${rec.id}: ${auditLabel(k)}`); }
+          return;
+        }
+        if (sameKey(old, rec, k)) {
+          if (op.verified) { Object.assign(np, { verified: true, verified_by: op.verified_by, verified_date: op.verified_date, audit_note: op.audit_note || '' }); st.kept++; }
+          return;
+        }
+        if (trusted) {                                                      // differs from a checked value: keep the checked one
+          const newText = auditValueText(rec, k);
+          copyKey(old, rec, k);
+          rec.cross_references.push({ field: k, value: PROP_BY_KEY[k] ? newText : newText.slice(0, 200), source_doi: rec.paper.doi, note: 'Re-extraction gave a different value; the verified value was kept' });
+          st.conflicts.push(`${rec.id}: ${auditLabel(k)} kept ${auditValueText(old, k)}, new run gave ${newText}`);
+        } else st.replaced.push(`${rec.id}: ${auditLabel(k)}`);
+      });
+      applyDerived(rec);
+      rec.tags = deriveTags(rec);
+      return rec;
+    }
+
+    function reconcilePaper(olds, news, st) {
+      const pairs = [];
+      olds.forEach((o, i) => news.forEach((n, j) => { const s = pairScore(o, n); if (s >= 2) pairs.push([s, i, j]); }));
+      pairs.sort((a, b) => b[0] - a[0]);
+      const usedO = new Set(), usedN = new Set(), out = [];
+      pairs.forEach(([, i, j]) => {
+        if (usedO.has(i) || usedN.has(j)) return;
+        usedO.add(i); usedN.add(j);
+        out.push(carryOver(olds[i], news[j], st)); st.paired++;
+      });
+      const baseKey = Date.now().toString(36).toUpperCase();
+      news.forEach((n, j) => {
+        if (usedN.has(j)) return;
+        n.id = `EM-${baseKey}-R${j + 1}`; n.added_at = new Date().toISOString();
+        out.push(n); st.added.push(`${n.id}: ${n.material_label}`);
+      });
+      olds.forEach((o, i) => {
+        if (usedO.has(i)) return;
+        const keep = JSON.parse(JSON.stringify(o));
+        keep.flags = keep.flags || [];
+        if (!keep.flags.includes('not_found_on_reextract')) keep.flags.push('not_found_on_reextract');
+        out.push(keep); st.orphaned.push(`${o.id}: ${o.material_label}`);
+      });
+      return out;
+    }
+
+    // pdfIds: list of stored PDF ids, or nothing for every stored paper in the catalogue
+    async function reextractPapers(pdfIds) {
+      if (reextractRunning) return;
+      if (!catalogueLoaded) { showNotification('Wait until the catalogue has loaded.'); return; }
+      const ids = Array.isArray(pdfIds) ? pdfIds : [...new Set(catalogue.map(r => r.paper?.pdf_id).filter(Boolean))];
+      if (!ids.length) { showNotification('No stored papers to re-extract.'); return; }
+      const nRec = catalogue.filter(r => ids.includes(r.paper?.pdf_id)).length;
+      if (!confirm(`Re-extract ${ids.length} paper(s) (${nRec} records) with the current prompt?\n\nThis calls Gemini once per paper and can take several minutes. Nothing changes until you review the result and click Apply.`)) return;
+      const model = document.getElementById('ingestion-llm-provider')?.value || 'cascade';
+      const btn = document.getElementById('reextract-btn');
+      reextractRunning = true; closeSpecModal();
+      const results = [];
+      try {
+        for (let i = 0; i < ids.length; i++) {
+          const pid = ids[i], olds = catalogue.filter(r => r.paper?.pdf_id === pid);
+          const title = olds[0]?.paper?.title || olds[0]?.paper?.doi || pid.slice(0, 10);
+          if (btn) btn.innerText = `Re-extracting ${i + 1}/${ids.length}...`;
+          const st = { paired: 0, kept: 0, restored: [], conflicts: [], replaced: [], added: [], orphaned: [] };
+          try {
+            const res = await api('/api/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: '', model, pdf_id: pid, images: [] }) });
+            const j = await res.json(), raw = j.result || {};
+            const list = Array.isArray(raw.materials) ? raw.materials : [];
+            if (!list.length) throw new Error('the model returned no materials');
+            const p0 = olds[0]?.paper || {};
+            const paper = { title: raw.title || p0.title, doi: raw.doi || p0.doi, year: raw.year ?? p0.year, soil_origin: raw.soil_origin || p0.soil_origin };
+            const news = list.map((m, k) => {
+              const r = normalizeMaterial(m, paper, k);
+              r.paper.pdf_id = pid; Object.values(r.provenance).forEach(p => { p.pdf_id = pid; });
+              return r;
+            });
+            results.push({ pid, title, snapshot: JSON.stringify(olds), olds, recs: reconcilePaper(olds, news, st), st, warnings: j.warnings || [] });
+          } catch (e) {
+            results.push({ pid, title, olds, st, error: e.message || String(e) });
+          }
+        }
+      } finally {
+        reextractRunning = false;
+        if (btn) btn.innerText = 'Re-extract papers';
+      }
+      pendingReextract = results;
+      showReextractSummary();
+    }
+
+    function showReextractSummary() {
+      const R = pendingReextract || [], ok = R.filter(r => !r.error);
+      const list = (title, arr) => arr.length ? `<div class="mt-1"><span class="text-slate-500">${title} (${arr.length}):</span><ul class="list-disc ml-5">${arr.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : '';
+      document.getElementById('modal-spec-title').innerText = 'RE-EXTRACTION RESULT (NOT APPLIED YET)';
+      document.getElementById('modal-spec-body').innerHTML = `
+        <p>${ok.length} of ${R.length} paper(s) re-extracted. Review, then apply. The server makes a backup before applying; failed papers stay as they are.</p>
+        ${R.map(r => `<div class="border border-slate-200 rounded p-3 ${r.error ? 'bg-rose-50' : ''}">
+          <div class="font-bold">${esc(r.title)}</div>
+          ${r.error ? `<div class="text-rose-700">Failed: ${esc(r.error)}. This paper is unchanged.</div>` : `
+          <div>${r.olds.length} record(s) before, ${r.recs.length} after. ${r.st.paired} paired with an old record; ${r.st.kept} verified value(s) came out the same and stay verified.</div>
+          ${r.warnings.length ? `<div class="text-amber-700">${esc(r.warnings.join(' '))}</div>` : ''}
+          ${list('Differs from your verified value: verified value kept, new value logged as a conflict', r.st.conflicts)}
+          ${list('Verified value not found by the new run: kept', r.st.restored)}
+          ${list('Unverified value replaced by the new run', r.st.replaced)}
+          ${list('New materials (unverified)', r.st.added)}
+          ${list('Old records with no partner: kept and flagged not_found_on_reextract (delete them if they duplicate a new one)', r.st.orphaned)}`}
+        </div>`).join('')}
+        <div class="flex gap-2 justify-end">
+          <button onclick="discardReextract()" class="btn btn-secondary px-4 py-2 text-xs font-semibold uppercase">Discard</button>
+          <button onclick="applyReextract()" class="btn btn-primary px-4 py-2 text-xs font-semibold uppercase" ${ok.length ? '' : 'disabled'}>Apply ${ok.length} paper(s)</button>
+        </div>`;
+      document.getElementById('spec-sheet-modal').classList.remove('hidden');
+    }
+    function discardReextract() { pendingReextract = null; closeSpecModal(); showNotification('Re-extraction discarded. Nothing changed.'); }
+    function applyReextract() {
+      const R = (pendingReextract || []).filter(r => !r.error);
+      if (!R.length) return;
+      const skipped = [];
+      R.forEach(r => {
+        // the user may have edited this paper's records while the run was going: then leave it alone
+        if (JSON.stringify(catalogue.filter(x => x.paper?.pdf_id === r.pid)) !== r.snapshot) { skipped.push(r.title); return; }
+        const at = catalogue.findIndex(x => x.paper?.pdf_id === r.pid);
+        catalogue = catalogue.filter(x => x.paper?.pdf_id !== r.pid);
+        catalogue.splice(at < 0 ? 0 : Math.min(at, catalogue.length), 0, ...r.recs);
+      });
+      pendingReextract = null; forceBackupNext = true;
+      saveState(); closeSpecModal();
+      showNotification(`Applied ${R.length - skipped.length} paper(s); a backup was made first.` +
+        (skipped.length ? ` Skipped (edited during the run, re-extract again): ${skipped.join('; ')}.` : '') +
+        ' New values are unverified: audit them, then Publish.');
+    }
+
+    // ============================================================
     // CATALOGUE TABLE
     // ============================================================
     function populateTechniqueFilter() {
@@ -1478,6 +1679,7 @@
       }).join('');
       document.getElementById('modal-spec-body').innerHTML = `
         <div class="flex flex-wrap gap-1">${tagsHtml(it)}${readinessHtml(it)}</div>
+        ${it.paper?.pdf_id ? `<div><button onclick="reextractPapers(['${esc(it.paper.pdf_id)}'])" class="btn btn-secondary px-3 py-1 text-[10px] font-semibold uppercase">Re-extract this paper (${catalogue.filter(r => r.paper?.pdf_id === it.paper.pdf_id).length} records)</button></div>` : ''}
         <div>${compBarHtml(it)}${compListHtml(it)}</div>
         <div class="grid grid-cols-2 gap-2">
           <div><span class="text-slate-500">Texture class:</span> <strong>${esc(it.soil_texture_class || '-')}</strong></div>

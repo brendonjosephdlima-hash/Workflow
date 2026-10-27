@@ -156,13 +156,13 @@ def read_records():
         return None  # unreadable file: caller must not overwrite blindly
 
 
-def backup_if_needed(old_count: int, new_count: int) -> None:
+def backup_if_needed(old_count: int, new_count: int, force: bool = False) -> None:
     if not CATALOGUE_FILE.exists():
         return
     backups = sorted(BACKUP_DIR.glob("catalogue_*.json"))
     recent = backups and (time.time() - backups[-1].stat().st_mtime) < BACKUP_EVERY_SECONDS
     shrinking = new_count < old_count  # deletions always get a backup first
-    if recent and not shrinking:
+    if recent and not shrinking and not force:
         return
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     shutil.copy2(CATALOGUE_FILE, BACKUP_DIR / f"catalogue_{stamp}.json")
@@ -189,7 +189,7 @@ def put_catalogue():
         old = read_records()
         if old is None:
             return err("Existing catalogue.json is unreadable; refusing to overwrite. Check data/backups/.", 500)
-        backup_if_needed(len(old), len(records))
+        backup_if_needed(len(old), len(records), force=body.get("force_backup") is True)
         atomic_write(CATALOGUE_FILE, {"schema": "earth_catalogue_store", "version": 1,
                                       "saved_at": datetime.now().isoformat(timespec="seconds"),
                                       "records": records})
@@ -339,6 +339,9 @@ def extract():
         blob = (PDF_DIR / f"{pid}.pdf").read_bytes()
         if len(blob) <= MAX_INLINE_PDF:
             parts.append({"inlineData": {"mimeType": "application/pdf", "data": base64.b64encode(blob).decode()}})
+        elif not text:
+            return err(f"PDF is over {MAX_INLINE_PDF // 1024 // 1024} MB and no text was given. "
+                       "Re-extract it from the Paper Ingestion tab so its text is sent.")
         else:
             warnings.append(f"PDF is over {MAX_INLINE_PDF // 1024 // 1024} MB, so only its text was sent.")
     for img in images[:12]:

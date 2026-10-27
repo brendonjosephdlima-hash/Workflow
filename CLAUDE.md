@@ -55,10 +55,10 @@ It is the only copy of the extraction prompt (the browser never sees it).
 |---|---|
 | `GET /` | serves `static/index.html` |
 | `GET /api/status` | key configured?, model list, data dir, cloud URLs (never returns a key) |
-| `GET/PUT /api/catalogue` | whole-catalogue load/save; atomic write; backup before any shrink and every 10 min; refuses to overwrite an unreadable file |
+| `GET/PUT /api/catalogue` | whole-catalogue load/save; atomic write; backup before any shrink, every 10 min, or when `force_backup: true`; refuses to overwrite an unreadable file |
 | `GET /export.json[?verified_only=1]` | the Grasshopper export written at save time |
 | `POST /api/pdfs`, `GET /api/pdfs/<sha256>` | content-addressed PDF store |
-| `POST /api/extract` | calls Gemini with `prompt.txt`, model cascade (`GEMINI_MODELS`), PDF inline up to ~14 MB else text only |
+| `POST /api/extract` | calls Gemini with `prompt.txt`, model cascade (`GEMINI_MODELS`), PDF inline up to ~14 MB else text only (error if too big and no text) |
 | `POST /api/test` | tries the models |
 | `POST /api/publish` | uploads both export files to the Supabase Storage bucket |
 
@@ -85,6 +85,15 @@ Env vars: `GEMINI_API_KEY`, `GEMINI_MODELS`, `PORT`, `HOST`, `CATALOGUE_DATA`, `
 - `buildExportRecord`, `buildExportPayload`, `persistCatalogue`, `publishToCloud`, `renderTable` (REP/CALC/EST badges,
   "cited: <ref>" under the id), `openAuditModal`, `openSpecModal`.
 - `catalogueLoaded` blocks saving until the server copy was read.
+- **Re-extraction** (`reextractPapers(pdfIds?)`, button "Re-extract papers" + "Re-extract this paper" in the Sheet):
+  re-runs `/api/extract` on stored PDFs (pdf_id only, no text) and reconciles per paper. `pairScore` pairs new with
+  old records (equal values +3 / differing -1, composition pct matches, label/test-condition word overlap, technique,
+  cited_ref; threshold 2, greedy). `carryOver`: new record takes the old id; equal values keep verification; a value
+  that differs from a verified/manual one keeps the old value and logs the new one in `cross_references`; verified
+  values the new run missed are restored; unverified ones are replaced. Unpaired new -> added (`EM-<base>-R<n>`),
+  unpaired old -> kept + flag `not_found_on_reextract`. Nothing changes until Apply in the summary modal (reuses the
+  Sheet modal); Apply forces a server backup (`force_backup` in the PUT body) and skips papers edited during the run.
+  New keys (e.g. raw_data) are unverified, so such records leave the verified-only export until audited.
 
 ### Record shape (main fields)
 `id`, `material_label`, `label_original` (pre-migration name), `label_note`, `cited_ref`, `technique_tags[]`, `technique_note`, `tags[]`,
