@@ -3,7 +3,7 @@
 #
 # Inputs   json_text    str    Item   <- from component 1
 #          material_id  str    Item   <- an id from component 3 (List Item on its 'ids'), e.g. "EM-..."
-#          soil_map     str    Item   <- full path to data/soil_map.geojson (File Path component or Panel).
+#          soil_map     str    Item (optional)  full path to data/soil_map.geojson; empty = SOIL_MAP_PATH below.
 #                                        Made once with:  python "01_Soil Extraction/build_soil_map.py"
 #          min_match    float  Item (optional)  areas at or above this count as buildable, default 80
 #          scale        float  Item (optional)  model units per degree, default 1 (x = longitude, y = latitude)
@@ -26,6 +26,9 @@ import scriptcontext as sc
 import Rhino.Geometry as rg
 from System.Drawing import Color
 
+SOIL_MAP_PATH = r"C:\Users\Asus\Desktop\MAA 02\Thesis\Workflow\02_Material Catalogue\earth-catalogue\data\soil_map.geojson"
+
+soil_map = str(globals().get("soil_map") or "").strip() or SOIL_MAP_PATH
 min_match = globals().get("min_match")
 scale = globals().get("scale")
 only_matching = globals().get("only_matching")
