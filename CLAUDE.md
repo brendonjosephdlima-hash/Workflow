@@ -94,7 +94,8 @@ Env vars: `GEMINI_API_KEY`, `GEMINI_MODELS`, `PORT`, `HOST`, `CATALOGUE_DATA`, `
   `soilCorrection`; `renderSiteMatches` ranks countries by area at >= the slider minimum. Texture only: a loamy recipe
   matches ~46% of land at >= 80%, so it shortlists regions rather than deciding.
 - **Inbox tab** (`loadInbox` on start, `renderInbox`, `checkInbox`, `extractInbox`, `extractRecommended`): sequential
-  check / import + `/api/extract` + `recordsFromResult` + `mergeOrInsert`, then `saveState` and `showReview(pdfIds)`.
+  check / import + `/api/extract` + `recordsFromResult` + `mergeOrInsert`, saved after EACH paper (before its status
+  becomes `extracted`; a failed save leaves it re-runnable), then `showReview(pdfIds)`.
   `recordsFromResult` is shared with re-extraction.
 - **Re-extraction** (`reextractPapers(pdfIds?)`, button "Re-extract papers" + "Re-extract this paper" in the Sheet):
   re-runs `/api/extract` on stored PDFs (pdf_id only, no text) and reconciles per paper. `pairScore` pairs new with
