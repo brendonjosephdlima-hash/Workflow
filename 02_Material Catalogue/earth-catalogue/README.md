@@ -65,6 +65,8 @@ Create the inputs/outputs named in the header comment of each script, and set ty
     07_honeybee_material.py best match + wall thickness -> conductivity, density, specific heat for HB Opaque Material
     08_where_to_build.py   a material id -> world map of soils that fit its recipe (coloured meshes) + ranked countries
                            needs data/soil_map.geojson: python "01_Soil Extraction/build_soil_map.py" (once)
+                           regions (states/provinces) need 01_Soil Extraction/admin1/ne_10m_admin_1_states_provinces.geojson
+                           from github.com/nvkelso/natural-earth-vector (v5.1.2, geojson/), public domain
 
 Wiring: Button -> 01.fetch; Panel with the URL -> 01.url; 01.json_text -> 02, 03 and 04.json_text;
 04.best -> 05, 06 and 07.best.

@@ -13,8 +13,10 @@
 #          legend             the band of each mesh, e.g. "90+ %"  (Legend component: colors -> C, legend -> T)
 #          borders            country outlines, always drawn (from countries.geojson next to soil_map)
 #          outlines           area boundaries as closed polylines (only with show_outlines), same order as match
-#          match, country, texture   per drawn area
+#          match, country, region, texture   per drawn area (region = the main state / province / department in it)
 #          countries, country_area_km2, country_best   countries ranked by buildable area (>= min_match)
+#          regions, region_area_km2, region_best       TREES: branch {i} = the buildable regions of countries[i],
+#                                                      largest first (regions from Natural Earth admin-1)
 #          recipe, report
 #
 # Match = same score as component 4: both soils rescaled to clay+silt+sand = 100,
@@ -25,6 +27,7 @@
 import json
 import os
 
+import ghpythonlib.treehelpers as th
 import scriptcontext as sc
 import Rhino.Geometry as rg
 from System.Collections.Generic import List
@@ -44,8 +47,9 @@ k = float(scale) if scale else 1.0
 BANDS = [(90, 26, 127, 55, "90+ %"), (80, 76, 175, 80, "80-89 %"), (70, 192, 216, 74, "70-79 %"),
          (60, 240, 180, 41, "60-69 %"), (-1, 231, 229, 228, "< 60 %")]
 
-meshes, colors, legend, borders, outlines, match, country, texture = [], [], [], [], [], [], [], []
+meshes, colors, legend, borders, outlines, match, country, region, texture = [], [], [], [], [], [], [], [], []
 countries, country_area_km2, country_best = [], [], []
+regions, region_area_km2, region_best = None, None, None
 recipe, report = None, ""
 
 
@@ -145,14 +149,19 @@ else:
     for p, site, parts in load_areas(str(soil_map), k):
         mt = 100.0 - 0.5 * sum(abs(a - b) for a, b in zip(recipe_t, site))
         if mt >= min_m:
-            c = by_country.setdefault(p["country"], [0.0, 0.0])
+            c = by_country.setdefault(p["country"], [0.0, 0.0, {}])
             c[0] += p.get("sqkm") or 0
             c[1] = max(c[1], mt)
+            for name, km2 in p.get("regions") or []:
+                rr = c[2].setdefault(name, [0.0, 0.0])
+                rr[0] += km2
+                rr[1] = max(rr[1], mt)
         elif only_matching:
             continue
         per_band[band_of(mt)].extend(m for m, pl in parts)
         match.append(round(mt, 1))
         country.append(p["country"])
+        region.append(p["regions"][0][0] if p.get("regions") else "")
         texture.append(p["texture"])
         if show_outlines:
             outlines.extend(pl.ToPolylineCurve() for m, pl in parts)
@@ -171,12 +180,18 @@ else:
     countries = [c for c, v in ranked]
     country_area_km2 = [round(v[0]) for c, v in ranked]
     country_best = [round(v[1], 1) for c, v in ranked]
+    reg = [sorted(v[2].items(), key=lambda kv: -kv[1][0]) for c, v in ranked]
+    regions = th.list_to_tree([[n for n, rv in rs] for rs in reg])
+    region_area_km2 = th.list_to_tree([[round(rv[0]) for n, rv in rs] for rs in reg])
+    region_best = th.list_to_tree([[round(rv[1], 1) for n, rv in rs] for rs in reg])
     total = sum(country_area_km2)
     lines = ["%s  (%s)" % (mat.get("name"), ", ".join(mat.get("techniques") or [])),
              "Soil recipe (rescaled): " + recipe,
              "Buildable (match >= %.0f %%): %d countries, %.1f million km2" % (min_m, len(countries), total / 1e6)]
-    lines += ["  %-28s %8.0fk km2   best %.0f %%" % (c, a / 1e3, b)
-              for c, a, b in list(zip(countries, country_area_km2, country_best))[:10]]
+    for c, a, b, rs in list(zip(countries, country_area_km2, country_best, reg))[:10]:
+        lines.append("  %-28s %8.0fk km2   best %.0f %%" % (c, a / 1e3, b))
+        if rs:
+            lines.append("      " + ", ".join("%s (%.0f %%)" % (n, rv[1]) for n, rv in rs[:5]) + (", ..." if len(rs) > 5 else ""))
     lines.append("%d areas drawn in %d colour bands. Texture only (DSMW topsoil): shortlist regions, then test the local soil."
                  % (n_drawn, len(meshes)))
     report = "\n".join(lines)

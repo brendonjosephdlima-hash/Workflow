@@ -48,12 +48,40 @@ def geojson(geom):
     return geo
 
 
+# Regions (states / provinces / departments) inside each soil area, from Natural Earth admin-1 (public domain):
+#   admin1/ne_10m_admin_1_states_provinces.geojson
+#   https://github.com/nvkelso/natural-earth-vector  (v5.1.2, geojson/ folder)
+# Each area gets [[region, km2], ...]. DSMW and Natural Earth borders do not line up exactly, so only regions of the
+# country that covers most of the area are kept (country names differ between the two datasets, so this is done by
+# geometry, not by name); slivers (< 2 % of the area and < 100 km2) are dropped and the rest is scaled so the km2
+# add up to the area's DSMW size. Without the file the map is built without regions.
+ADMIN1 = HERE / "admin1" / "ne_10m_admin_1_states_provinces.geojson"
+regions = {}
+if ADMIN1.exists():
+    r1 = gpd.read_file(ADMIN1)[["name", "admin", "geometry"]].to_crs(4326)
+    r1["geometry"] = r1.geometry.simplify(0.02).buffer(0)
+    soil = gpd.GeoDataFrame({"aid": g.index}, geometry=g.geometry.buffer(0), crs=4326)
+    pieces = gpd.overlay(soil, r1, how="intersection", keep_geom_type=True)
+    pieces["km2"] = pieces.to_crs(6933).area / 1e6     # equal-area projection
+    for aid, grp in pieces.groupby("aid"):
+        grp = grp[grp["admin"] == grp.groupby("admin")["km2"].sum().idxmax()]
+        tot = grp["km2"].sum()
+        keep = grp.groupby("name")["km2"].sum()
+        keep = keep[(keep >= 0.02 * tot) | (keep >= 100)]
+        if len(keep):
+            f = g.at[aid, "SQKM"] / keep.sum()
+            regions[aid] = [[str(n), round(v * f)] for n, v in keep.sort_values(ascending=False).items()]
+    print(f"regions: {len(regions)} of {len(g)} soil areas lie in a named region")
+else:
+    print(f"no {ADMIN1.name}: building without regions")
+
 features = []
-for r in g.itertuples():
+for aid, r in zip(g.index, g.itertuples()):
     geo = geojson(r.geometry)
     features.append({"type": "Feature", "geometry": geo, "properties": {
         "snum": int(r.SNUM), "country": str(r.COUNTRY).title(), "fao": r.FAOSOIL, "texture": str(r.TEXTURE).replace("_", " ").lower(),
-        "clay": float(r.CLAY1), "silt": float(r.SILT1), "sand": float(r.SAND1), "sqkm": float(r.SQKM)}})
+        "clay": float(r.CLAY1), "silt": float(r.SILT1), "sand": float(r.SAND1), "sqkm": float(r.SQKM),
+        "regions": regions.get(aid, [])}})
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
 OUT.write_text(json.dumps({"type": "FeatureCollection", "source": "FAO DSMW topsoil (CLAY1/SILT1/SAND1)",
