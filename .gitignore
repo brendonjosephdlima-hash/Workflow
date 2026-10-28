@@ -8,6 +8,8 @@ data/
 
 # ================= large raw datasets: download them instead (see README) =================
 DSMW/
+admin1/
+climate/
 
 # ================= GIS & spatial data =================
 *.shp

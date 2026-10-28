@@ -67,6 +67,9 @@ Create the inputs/outputs named in the header comment of each script, and set ty
                            needs data/soil_map.geojson: python "01_Soil Extraction/build_soil_map.py" (once)
                            regions (states/provinces) need 01_Soil Extraction/admin1/ne_10m_admin_1_states_provinces.geojson
                            from github.com/nvkelso/natural-earth-vector (v5.1.2, geojson/), public domain
+                           climate (climate_filter input) needs 01_Soil Extraction/climate/1991_2020/koppen_geiger_0p1.tif +
+                           climate/legend.txt from koppen_geiger_tif.zip, figshare.com/articles/dataset/21789074
+                           (Beck et al. 2023, Scientific Data 10, 724, CC BY 4.0: cite it)
 
 Wiring: Button -> 01.fetch; Panel with the URL -> 01.url; 01.json_text -> 02, 03 and 04.json_text;
 04.best -> 05, 06 and 07.best.

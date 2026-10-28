@@ -9,11 +9,17 @@
 #          scale        float  Item (optional)  model units per degree, default 1 (x = longitude, y = latitude)
 #          only_matching bool  Item (optional)  True = draw only areas >= min_match (cleaner)
 #          show_outlines bool  Item (optional)  True = also output every area boundary (slow: ~30,000 curves)
+#          climate_filter str  Item (optional)  Koppen-Geiger classes to keep, by code or prefix, comma separated:
+#                                        "B" = all arid, "BWh, BSh" = hot desert + hot steppe, "Cs" = Mediterranean.
+#                                        Areas in other climates are not counted and are drawn pale ("other climate").
+#                                        Empty = all climates.
 # Outputs  meshes, colors     one joined mesh per colour band, at most 5 (Custom Preview: meshes -> G, colors -> M)
 #          legend             the band of each mesh, e.g. "90+ %"  (Legend component: colors -> C, legend -> T)
 #          borders            country outlines, always drawn (from countries.geojson next to soil_map)
 #          outlines           area boundaries as closed polylines (only with show_outlines), same order as match
-#          match, country, region, texture   per drawn area (region = the main state / province / department in it)
+#          match, country, region, texture, climate   per drawn area (region = main state / province / department,
+#                                                      climate = main Koppen-Geiger class 1991-2020, e.g. "Csa")
+#          climates, climate_area_km2   climate classes of the buildable areas, largest first (use them to pick a filter)
 #          countries, country_area_km2, country_best   countries ranked by buildable area (>= min_match)
 #          regions, region_area_km2, region_best       TREES: branch {i} = the buildable regions of countries[i],
 #                                                      largest first (regions from Natural Earth admin-1)
@@ -22,10 +28,12 @@
 # Match = same score as component 4: both soils rescaled to clay+silt+sand = 100,
 #         match = 100 - 0.5 x sum |difference|, so 80 means 20 % of the soil would have to be swapped.
 # Soil = FAO DSMW topsoil, 1:5,000,000, dominant soil per unit: it shortlists regions, it does not
-# replace testing the local soil. Texture only (no clay mineralogy, climate or additives).
+# replace testing the local soil. Texture only (no clay mineralogy or additives).
+# Climate = Beck et al. (2023) Koppen-Geiger 1991-2020, Scientific Data 10, 724 (CC BY 4.0): cite it when used.
 # ============================================================================
 import json
 import os
+import re
 
 import ghpythonlib.treehelpers as th
 import scriptcontext as sc
@@ -40,15 +48,18 @@ min_match = globals().get("min_match")
 scale = globals().get("scale")
 only_matching = globals().get("only_matching")
 show_outlines = globals().get("show_outlines")
+climate_filter = globals().get("climate_filter")
 min_m = float(min_match) if min_match is not None else 80.0
 k = float(scale) if scale else 1.0
+clim_keep = [t.lower() for t in re.split(r"[,;\s]+", str(climate_filter or "")) if t]
 
-# colour bands, same as the catalogue app: (lower bound, R, G, B, label)
+# colour bands, same as the catalogue app: (lower bound, R, G, B, label); the last one holds areas
+# outside climate_filter
 BANDS = [(90, 26, 127, 55, "90+ %"), (80, 76, 175, 80, "80-89 %"), (70, 192, 216, 74, "70-79 %"),
-         (60, 240, 180, 41, "60-69 %"), (-1, 231, 229, 228, "< 60 %")]
+         (60, 240, 180, 41, "60-69 %"), (-1, 231, 229, 228, "< 60 %"), (None, 247, 247, 245, "other climate")]
 
-meshes, colors, legend, borders, outlines, match, country, region, texture = [], [], [], [], [], [], [], [], []
-countries, country_area_km2, country_best = [], [], []
+meshes, colors, legend, borders, outlines, match, country, region, texture, climate = [], [], [], [], [], [], [], [], [], []
+countries, country_area_km2, country_best, climates, climate_area_km2 = [], [], [], [], []
 regions, region_area_km2, region_best = None, None, None
 recipe, report = None, ""
 
@@ -63,8 +74,12 @@ def three(c, s, a):
 
 def band_of(m):
     for i, b in enumerate(BANDS):
-        if m >= b[0]:
+        if b[0] is not None and m >= b[0]:
             return i
+
+
+def climate_ok(code):
+    return not clim_keep or any(str(code or "").lower().startswith(t) for t in clim_keep)
 
 
 def load_areas(path, k):
@@ -144,11 +159,13 @@ else:
     recipe_t = three(soil["clay_pct"], soil["silt_pct"], soil["sand_pct"])
     recipe = "clay %.0f / silt %.0f / sand %.0f %%" % recipe_t
     borders = load_borders(os.path.join(os.path.dirname(str(soil_map)), "countries.geojson"), k)
-    by_country = {}
+    by_country, by_climate = {}, {}
     per_band = [[] for b in BANDS]
     for p, site, parts in load_areas(str(soil_map), k):
         mt = 100.0 - 0.5 * sum(abs(a - b) for a, b in zip(recipe_t, site))
-        if mt >= min_m:
+        in_climate = climate_ok(p.get("climate"))
+        if mt >= min_m and in_climate:
+            by_climate[p.get("climate") or "?"] = by_climate.get(p.get("climate") or "?", 0) + (p.get("sqkm") or 0)
             c = by_country.setdefault(p["country"], [0.0, 0.0, {}])
             c[0] += p.get("sqkm") or 0
             c[1] = max(c[1], mt)
@@ -158,11 +175,12 @@ else:
                 rr[1] = max(rr[1], mt)
         elif only_matching:
             continue
-        per_band[band_of(mt)].extend(m for m, pl in parts)
+        per_band[band_of(mt) if in_climate else len(BANDS) - 1].extend(m for m, pl in parts)
         match.append(round(mt, 1))
         country.append(p["country"])
         region.append(p["regions"][0][0] if p.get("regions") else "")
         texture.append(p["texture"])
+        climate.append(p.get("climate") or "")
         if show_outlines:
             outlines.extend(pl.ToPolylineCurve() for m, pl in parts)
     n_drawn = len(match)
@@ -185,9 +203,14 @@ else:
     region_area_km2 = th.list_to_tree([[round(rv[0]) for n, rv in rs] for rs in reg])
     region_best = th.list_to_tree([[round(rv[1], 1) for n, rv in rs] for rs in reg])
     total = sum(country_area_km2)
+    cl = sorted(by_climate.items(), key=lambda kv: -kv[1])
+    climates = [c for c, a in cl]
+    climate_area_km2 = [round(a) for c, a in cl]
     lines = ["%s  (%s)" % (mat.get("name"), ", ".join(mat.get("techniques") or [])),
              "Soil recipe (rescaled): " + recipe,
-             "Buildable (match >= %.0f %%): %d countries, %.1f million km2" % (min_m, len(countries), total / 1e6)]
+             "Climate filter: " + (", ".join(t for t in re.split(r"[,;\s]+", str(climate_filter)) if t) if clim_keep else "none (all climates)"),
+             "Buildable (match >= %.0f %%): %d countries, %.1f million km2" % (min_m, len(countries), total / 1e6),
+             "  climates: " + ", ".join("%s %.1fM km2" % (c, a / 1e6) for c, a in cl[:8])]
     for c, a, b, rs in list(zip(countries, country_area_km2, country_best, reg))[:10]:
         lines.append("  %-28s %8.0fk km2   best %.0f %%" % (c, a / 1e3, b))
         if rs:

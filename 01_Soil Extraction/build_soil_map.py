@@ -75,13 +75,51 @@ if ADMIN1.exists():
 else:
     print(f"no {ADMIN1.name}: building without regions")
 
+# Koppen-Geiger climate (1991-2020) of each soil area, from Beck et al. (2023), Scientific Data 10, 724, CC BY 4.0:
+#   climate/1991_2020/koppen_geiger_0p1.tif + climate/legend.txt
+#   (koppen_geiger_tif.zip from https://figshare.com/articles/dataset/21789074, unzip those two files)
+# The soil areas are burnt onto the same 0.1 deg grid; each area gets its main class and the classes covering
+# >= 10 % of it. Areas smaller than a cell take the class under their representative point.
+KG_TIF = HERE / "climate" / "1991_2020" / "koppen_geiger_0p1.tif"
+KG_LEGEND = HERE / "climate" / "legend.txt"
+climate = {}
+if KG_TIF.exists() and KG_LEGEND.exists():
+    import re
+    import numpy as np
+    import rasterio
+    from rasterio import features as rfeatures
+    codes = {int(m.group(1)): m.group(2) for m in re.finditer(r"^\s*(\d+):\s+(\w+)", KG_LEGEND.read_text(encoding="utf-8"), re.M)}
+    with rasterio.open(KG_TIF) as src:
+        kg = src.read(1)
+        ids = rfeatures.rasterize(((geom, i + 1) for i, geom in enumerate(g.geometry)), out_shape=kg.shape,
+                                  transform=src.transform, fill=0, dtype="int32")
+        for i, (aid, geom) in enumerate(zip(g.index, g.geometry)):
+            vals = kg[ids == i + 1]
+            vals = vals[np.isin(vals, list(codes))]
+            if vals.size == 0:
+                pt = geom.representative_point()
+                row, col = src.index(pt.x, pt.y)
+                v = int(kg[row, col]) if 0 <= row < kg.shape[0] and 0 <= col < kg.shape[1] else 0
+                if v in codes:
+                    climate[aid] = [[codes[v], 100]]
+                continue
+            u, n = np.unique(vals, return_counts=True)
+            order = np.argsort(-n)
+            share = n[order] * 100.0 / n.sum()
+            climate[aid] = [[codes[int(u[j])], round(float(s))] for j, s in zip(order, share) if s >= 10] \
+                or [[codes[int(u[order[0]])], round(float(share[0]))]]
+    print(f"climate: {len(climate)} of {len(g)} soil areas have a Koppen-Geiger class")
+else:
+    print(f"no {KG_TIF.name}: building without climate")
+
 features = []
 for aid, r in zip(g.index, g.itertuples()):
     geo = geojson(r.geometry)
     features.append({"type": "Feature", "geometry": geo, "properties": {
         "snum": int(r.SNUM), "country": str(r.COUNTRY).title(), "fao": r.FAOSOIL, "texture": str(r.TEXTURE).replace("_", " ").lower(),
         "clay": float(r.CLAY1), "silt": float(r.SILT1), "sand": float(r.SAND1), "sqkm": float(r.SQKM),
-        "regions": regions.get(aid, [])}})
+        "regions": regions.get(aid, []),
+        "climate": climate[aid][0][0] if aid in climate else "", "climates": climate.get(aid, [])}})
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
 OUT.write_text(json.dumps({"type": "FeatureCollection", "source": "FAO DSMW topsoil (CLAY1/SILT1/SAND1)",
