@@ -63,6 +63,8 @@ Create the inputs/outputs named in the header comment of each script, and set ty
     05_decode_best.py      best match -> every property as a single value
     06_karamba_material.py best match -> E, G, gamma, alphaT, ft, fc in Karamba units (kN/cm2, kN/m3)
     07_honeybee_material.py best match + wall thickness -> conductivity, density, specific heat for HB Opaque Material
+    08_where_to_build.py   a material id -> world map of soils that fit its recipe (coloured meshes) + ranked countries
+                           needs data/soil_map.geojson: python "01_Soil Extraction/build_soil_map.py" (once)
 
 Wiring: Button -> 01.fetch; Panel with the URL -> 01.url; 01.json_text -> 02, 03 and 04.json_text;
 04.best -> 05, 06 and 07.best.
