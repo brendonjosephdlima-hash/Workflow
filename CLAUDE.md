@@ -63,6 +63,7 @@ It is the only copy of the extraction prompt (the browser never sees it).
 | `POST /api/publish` | uploads both export files to the Supabase Storage bucket |
 | `GET /api/inbox` | scans `INBOX_DIR` (default `data/inbox`, recursive, *.pdf) into `data/inbox.json` keyed by sha256 (= PDF store id; unchanged path+size+mtime not re-hashed); returns present papers + `in_catalogue` |
 | `POST /api/inbox/<id>/check` | imports the PDF into the store, runs `check_prompt.txt` via `run_models`, stores `check`, `verdict` (`recommended`/`partial`/`not_useful`/`not_relevant`), `domains`, `reason` (see `verdict()`) |
+| `GET /api/soil_map` | `data/soil_map.geojson` (built by `01_Soil Extraction/build_soil_map.py` from DSMW + soil_data.csv: 7,766 areas merged per soil unit + country, simplified 0.08 deg, ~6 MB; not in git) |
 | `POST /api/inbox/<id>/import`, `/status` | copy into the PDF store; set status `new`/`checked`/`extracted`/`skipped` |
 
 Guards: Host header must be localhost, every mutating request needs `X-Catalogue-Client: 1` and a same-origin
@@ -88,6 +89,10 @@ Env vars: `GEMINI_API_KEY`, `GEMINI_MODELS`, `PORT`, `HOST`, `CATALOGUE_DATA`, `
 - `buildExportRecord`, `buildExportPayload`, `persistCatalogue`, `publishToCloud`, `renderTable` (REP/CALC/EST badges,
   "cited: <ref>" under the id), `openAuditModal`, `openSpecModal`.
 - `catalogueLoaded` blocks saving until the server copy was read.
+- **Reverse match** (`openSiteMap(id)`, button "Where can I build this?" in the Sheet for match-ready records): Leaflet
+  1.9.4 (cdnjs), no tile layer; colours every DSMW soil area by `soilMatch` (same formula as `04_match`), popup with
+  `soilCorrection`; `renderSiteMatches` ranks countries by area at >= the slider minimum. Texture only: a loamy recipe
+  matches ~46% of land at >= 80%, so it shortlists regions rather than deciding.
 - **Inbox tab** (`loadInbox` on start, `renderInbox`, `checkInbox`, `extractInbox`, `extractRecommended`): sequential
   check / import + `/api/extract` + `recordsFromResult` + `mergeOrInsert`, then `saveState` and `showReview(pdfIds)`.
   `recordsFromResult` is shared with re-extraction.

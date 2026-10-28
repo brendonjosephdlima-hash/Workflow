@@ -10,6 +10,8 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
   <style>
     body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
     .font-mono { font-family: 'Roboto Mono', monospace; }
@@ -350,6 +352,27 @@
   </div>
 
   <!-- SHEET MODAL -->
+  <div id="site-map-modal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[60] hidden flex items-center justify-center p-4">
+    <div class="bg-white border border-slate-200 rounded-xl max-w-6xl w-full h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+      <div class="bg-slate-900 text-white p-4 flex justify-between items-center border-b border-slate-800">
+        <div class="font-bold text-xs uppercase tracking-wider" id="site-map-title">WHERE CAN I BUILD THIS?</div>
+        <button onclick="closeSiteMap()" class="text-slate-400 hover:text-white font-bold text-sm p-1">&#10005;</button>
+      </div>
+      <div class="flex flex-1 min-h-0">
+        <div id="site-map" class="flex-1 min-w-0" style="background:#dbe7f0"></div>
+        <div class="w-72 border-l border-slate-200 p-4 overflow-y-auto text-xs font-mono space-y-3">
+          <div id="site-map-recipe"></div>
+          <label class="block"><span class="text-slate-500">Minimum match: <strong id="site-map-min-val">80</strong> %</span>
+            <input id="site-map-min" type="range" min="50" max="95" step="5" value="80" oninput="renderSiteMatches()" class="w-full"></label>
+          <div id="site-map-legend"></div>
+          <div id="site-map-list"></div>
+          <div class="text-[10px] text-slate-500">Topsoil texture only (FAO DSMW, 1:5,000,000; dominant soil per unit).
+            Same formula as Grasshopper 04_match. Shortlists regions; the local soil still has to be tested.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="spec-sheet-modal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
     <div class="bg-white border border-slate-200 rounded-xl max-w-3xl w-full max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
       <div class="bg-slate-900 text-white p-4 flex justify-between items-center border-b border-slate-800">
@@ -1961,7 +1984,10 @@
       }).join('');
       document.getElementById('modal-spec-body').innerHTML = `
         <div class="flex flex-wrap gap-1">${tagsHtml(it)}${readinessHtml(it)}</div>
-        ${it.paper?.pdf_id ? `<div><button onclick="reextractPapers(['${esc(it.paper.pdf_id)}'])" class="btn btn-secondary px-3 py-1 text-[10px] font-semibold uppercase">Re-extract this paper (${catalogue.filter(r => r.paper?.pdf_id === it.paper.pdf_id).length} records)</button></div>` : ''}
+        <div class="flex flex-wrap gap-2">
+          ${isMatchReady(it) ? `<button onclick="openSiteMap('${esc(it.id)}')" class="btn btn-primary px-3 py-1 text-[10px] font-semibold uppercase">Where can I build this?</button>` : ''}
+          ${it.paper?.pdf_id ? `<button onclick="reextractPapers(['${esc(it.paper.pdf_id)}'])" class="btn btn-secondary px-3 py-1 text-[10px] font-semibold uppercase">Re-extract this paper (${catalogue.filter(r => r.paper?.pdf_id === it.paper.pdf_id).length} records)</button>` : ''}
+        </div>
         <div>${compBarHtml(it)}${compListHtml(it)}</div>
         <div class="grid grid-cols-2 gap-2">
           <div><span class="text-slate-500">Texture class:</span> <strong>${esc(it.soil_texture_class || '-')}</strong></div>
@@ -1981,6 +2007,87 @@
       document.getElementById('spec-sheet-modal').classList.remove('hidden');
     }
     function closeSpecModal() { document.getElementById('spec-sheet-modal').classList.add('hidden'); }
+
+    // ============================================================
+    // REVERSE MATCH: material -> world map of soils that fit its recipe
+    //   same score as Grasshopper 04_match: both soils rescaled to clay+silt+sand = 100,
+    //   match = 100 - 0.5 * sum |difference|  (the share of the soil that already agrees)
+    // ============================================================
+    let soilMapData = null, siteMap = null, siteLayer = null, siteRecipe = null;
+    const MATCH_BANDS = [[90, '#1a7f37', '90+'], [80, '#4caf50', '80-89'], [70, '#c0d84a', '70-79'], [60, '#f0b429', '60-69'], [0, '#e7e5e4', '< 60']];
+
+    function soilThree(c, s, a) { const t = c + s + a; return t > 0 ? [c * 100 / t, s * 100 / t, a * 100 / t] : null; }
+    function soilMatch(recipe, f) {
+      const b = soilThree(f.clay, f.silt, f.sand);
+      if (!recipe || !b) return null;
+      return 100 - 0.5 * (Math.abs(recipe[0] - b[0]) + Math.abs(recipe[1] - b[1]) + Math.abs(recipe[2] - b[2]));
+    }
+    // what to do to the site soil to reach the recipe (+ = needs more), as in 04_match
+    function soilCorrection(recipe, f) {
+      const b = soilThree(f.clay, f.silt, f.sand);
+      const d = ['clay', 'silt', 'sand'].map((n, i) => `${n} ${recipe[i] - b[i] >= 0 ? '+' : ''}${Math.round(recipe[i] - b[i])}`);
+      return d.join(' / ');
+    }
+    function matchColor(m) { return m == null ? '#e7e5e4' : MATCH_BANDS.find(b => m >= b[0])[1]; }
+
+    async function openSiteMap(id) {
+      const it = catalogue.find(r => r.id === id);
+      if (!it || !isMatchReady(it)) return;
+      if (typeof L === 'undefined') { showNotification('The map library did not load (no internet?).'); return; }
+      const s = it.soil_fractions;
+      siteRecipe = soilThree(+s.clay_pct, +s.silt_pct, +s.sand_pct);
+      document.getElementById('site-map-title').innerText = `Where can I build: ${it.material_label}`;
+      document.getElementById('site-map-recipe').innerHTML = `<div class="text-slate-500">Soil recipe (rescaled)</div>
+        <div class="font-bold">clay ${fmt(siteRecipe[0], 0)} / silt ${fmt(siteRecipe[1], 0)} / sand ${fmt(siteRecipe[2], 0)} %</div>
+        <div class="text-slate-500 mt-1">${esc((it.technique_tags || []).map(t => TECHNIQUES[t] || t).join(', '))}${it.paper?.soil_origin ? ' &bull; soil from ' + esc(it.paper.soil_origin) : ''}</div>`;
+      document.getElementById('site-map-legend').innerHTML = MATCH_BANDS.map(b =>
+        `<div class="flex items-center gap-2"><span style="background:${b[1]}" class="inline-block w-4 h-3 border border-slate-300"></span>${b[2]} %</div>`).join('');
+      document.getElementById('site-map-modal').classList.remove('hidden');
+      if (!soilMapData) {
+        document.getElementById('site-map-list').innerText = 'Loading world soil map...';
+        try { soilMapData = await (await api('/api/soil_map')).json(); }
+        catch (e) { document.getElementById('site-map-list').innerText = e.message; return; }
+      }
+      soilMapData.features.forEach(f => { f.properties.match = soilMatch(siteRecipe, f.properties); });
+      if (!siteMap) {
+        siteMap = L.map('site-map', { preferCanvas: true, worldCopyJump: false, minZoom: 1, maxBounds: [[-90, -200], [90, 200]] }).setView([20, 10], 2);
+        siteMap.attributionControl.addAttribution('Soil: FAO DSMW');
+      }
+      siteMap.invalidateSize();
+      if (siteLayer) siteMap.removeLayer(siteLayer);
+      siteLayer = L.geoJSON(soilMapData, {
+        style: f => ({ fillColor: matchColor(f.properties.match), fillOpacity: 0.9, color: '#94a3b8', weight: 0.2 }),
+        onEachFeature: (f, layer) => layer.on('click', e => {
+          const p = f.properties;
+          L.popup().setLatLng(e.latlng).setContent(`<div style="font:11px monospace"><b>${esc(p.country)}</b><br>FAO unit ${esc(p.fao)} (${esc(p.texture)})<br>
+            soil clay ${fmt(p.clay, 0)} / silt ${fmt(p.silt, 0)} / sand ${fmt(p.sand, 0)} %<br><b>match ${fmt(p.match, 0)} %</b><br>
+            to reach the recipe: ${esc(soilCorrection(siteRecipe, p))}</div>`).openOn(siteMap);
+        })
+      }).addTo(siteMap);
+      renderSiteMatches();
+    }
+
+    // countries ranked by the area of soil at or above the minimum match
+    function renderSiteMatches() {
+      if (!soilMapData || !siteRecipe) return;
+      const min = +document.getElementById('site-map-min').value;
+      document.getElementById('site-map-min-val').innerText = min;
+      const by = {};
+      soilMapData.features.forEach(f => {
+        const p = f.properties;
+        if (p.match == null || p.match < min) return;
+        const c = by[p.country] || (by[p.country] = { area: 0, best: 0 });
+        c.area += p.sqkm || 0; c.best = Math.max(c.best, p.match);
+      });
+      const rows = Object.entries(by).sort((a, b) => b[1].area - a[1].area);
+      const total = rows.reduce((s, r) => s + r[1].area, 0);
+      document.getElementById('site-map-list').innerHTML = rows.length
+        ? `<div class="text-slate-500">${rows.length} countries, ${Math.round(total / 1e3).toLocaleString()} thousand km&sup2; at &ge; ${min} %</div>
+           <table class="w-full mt-1"><tr class="text-left text-slate-500"><th>Country</th><th class="text-right">k km&sup2;</th><th class="text-right">best</th></tr>
+           ${rows.slice(0, 25).map(([c, v]) => `<tr><td>${esc(c)}</td><td class="text-right">${Math.round(v.area / 1e3).toLocaleString()}</td><td class="text-right">${fmt(v.best, 0)}</td></tr>`).join('')}</table>`
+        : `<div class="text-slate-500">No soil area at &ge; ${min} %. Lower the minimum.</div>`;
+    }
+    function closeSiteMap() { document.getElementById('site-map-modal').classList.add('hidden'); }
 
     // ============================================================
     // MANUAL ENTRY

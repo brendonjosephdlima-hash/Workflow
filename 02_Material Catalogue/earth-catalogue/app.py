@@ -218,6 +218,15 @@ def export_json():
     return Response(path.read_bytes(), mimetype="application/json")
 
 
+@app.get("/api/soil_map")
+def soil_map():
+    """World soil areas with topsoil clay/silt/sand, for the reverse match ('Where can I build this?')."""
+    path = DATA / "soil_map.geojson"
+    if not path.exists():
+        return err("No soil map yet. Run: python \"01_Soil Extraction/build_soil_map.py\"", 404)
+    return send_file(path, mimetype="application/geo+json")
+
+
 # ----------------------------------------------------------------------------
 # cloud publish (Supabase Storage) so Grasshopper can fetch the catalogue by URL
 # ----------------------------------------------------------------------------
