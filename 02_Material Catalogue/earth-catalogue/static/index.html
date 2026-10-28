@@ -1638,6 +1638,10 @@
             const recs = recordsFromResult(j.result, ids[i], { title: p?.check?.title, doi: p?.check?.doi, year: p?.check?.year });
             const baseKey = Date.now().toString(36).toUpperCase();
             recs.forEach((rec, k) => { mergeOrInsert(rec, baseKey, k) === 'inserted' ? added++ : merged++; });
+            // save before marking extracted, so a closed tab mid-run cannot lose records the inbox counts as done
+            saveState(); clearTimeout(saveTimer);
+            await (saveChain = saveChain.then(persistCatalogue));
+            if (unsaved) throw new Error('extracted, but the catalogue could not be saved');
             await setInboxStatus(ids[i], 'extracted');
             done.push(ids[i]);
           } catch (e) { failed.push(`${p?.name || ids[i]}: ${e.message}`); }
