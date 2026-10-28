@@ -10,7 +10,8 @@
 #          only_matching bool  Item (optional)  True = draw only areas >= min_match (cleaner)
 #          show_outlines bool  Item (optional)  True = also output every area boundary (slow: ~30,000 curves)
 # Outputs  meshes, colors     one joined mesh per colour band, at most 5 (Custom Preview: meshes -> G, colors -> M)
-#          legend             the band of each mesh, e.g. "90+ %"
+#          legend             the band of each mesh, e.g. "90+ %"  (Legend component: colors -> C, legend -> T)
+#          borders            country outlines, always drawn (from countries.geojson next to soil_map)
 #          outlines           area boundaries as closed polylines (only with show_outlines), same order as match
 #          match, country, texture   per drawn area
 #          countries, country_area_km2, country_best   countries ranked by buildable area (>= min_match)
@@ -43,7 +44,7 @@ k = float(scale) if scale else 1.0
 BANDS = [(90, 26, 127, 55, "90+ %"), (80, 76, 175, 80, "80-89 %"), (70, 192, 216, 74, "70-79 %"),
          (60, 240, 180, 41, "60-69 %"), (-1, 231, 229, 228, "< 60 %")]
 
-meshes, colors, legend, outlines, match, country, texture = [], [], [], [], [], [], []
+meshes, colors, legend, borders, outlines, match, country, texture = [], [], [], [], [], [], [], []
 countries, country_area_km2, country_best = [], [], []
 recipe, report = None, ""
 
@@ -94,6 +95,26 @@ def load_areas(path, k):
     return areas
 
 
+def load_borders(path, k):
+    """country outlines as polyline curves, cached like the areas"""
+    if not os.path.exists(path):
+        return []
+    key = "earth_country_borders"
+    stamp = (path, os.path.getmtime(path), k)
+    hit = sc.sticky.get(key)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    with open(path, "r") as f:
+        data = json.load(f)
+    curves = []
+    for f in data["features"]:
+        for ring in rings(f["geometry"]):
+            if len(ring) >= 4:
+                curves.append(rg.Polyline([rg.Point3d(x * k, y * k, 0) for x, y in ring]).ToPolylineCurve())
+    sc.sticky[key] = (stamp, curves)
+    return curves
+
+
 def rings(geom):
     """outer rings of a Polygon / MultiPolygon (holes are skipped: lakes inside a soil area)"""
     if geom["type"] == "Polygon":
@@ -118,6 +139,7 @@ elif not soil_map or not os.path.exists(str(soil_map)):
 else:
     recipe_t = three(soil["clay_pct"], soil["silt_pct"], soil["sand_pct"])
     recipe = "clay %.0f / silt %.0f / sand %.0f %%" % recipe_t
+    borders = load_borders(os.path.join(os.path.dirname(str(soil_map)), "countries.geojson"), k)
     by_country = {}
     per_band = [[] for b in BANDS]
     for p, site, parts in load_areas(str(soil_map), k):
