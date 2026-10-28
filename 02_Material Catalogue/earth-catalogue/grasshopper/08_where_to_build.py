@@ -7,10 +7,12 @@
 #                                        Made once with:  python "01_Soil Extraction/build_soil_map.py"
 #          min_match    float  Item (optional)  areas at or above this count as buildable, default 80
 #          scale        float  Item (optional)  model units per degree, default 1 (x = longitude, y = latitude)
-#          only_matching bool  Item (optional)  True = draw only areas >= min_match (faster, cleaner)
-# Outputs  meshes, colors     one coloured mesh per soil area (Custom Preview: meshes -> Geometry, colors -> Material)
-#          outlines           the area boundaries as closed polylines, same order
-#          match, country, texture   per area, same order
+#          only_matching bool  Item (optional)  True = draw only areas >= min_match (cleaner)
+#          show_outlines bool  Item (optional)  True = also output every area boundary (slow: ~30,000 curves)
+# Outputs  meshes, colors     one joined mesh per colour band, at most 5 (Custom Preview: meshes -> G, colors -> M)
+#          legend             the band of each mesh, e.g. "90+ %"
+#          outlines           area boundaries as closed polylines (only with show_outlines), same order as match
+#          match, country, texture   per drawn area
 #          countries, country_area_km2, country_best   countries ranked by buildable area (>= min_match)
 #          recipe, report
 #
@@ -24,6 +26,7 @@ import os
 
 import scriptcontext as sc
 import Rhino.Geometry as rg
+from System.Collections.Generic import List
 from System.Drawing import Color
 
 SOIL_MAP_PATH = r"C:\Users\Asus\Desktop\MAA 02\Thesis\Workflow\02_Material Catalogue\earth-catalogue\data\soil_map.geojson"
@@ -32,13 +35,15 @@ soil_map = str(globals().get("soil_map") or "").strip() or SOIL_MAP_PATH
 min_match = globals().get("min_match")
 scale = globals().get("scale")
 only_matching = globals().get("only_matching")
+show_outlines = globals().get("show_outlines")
 min_m = float(min_match) if min_match is not None else 80.0
 k = float(scale) if scale else 1.0
 
-# colour bands, same as the catalogue app: (lower bound, R, G, B)
-BANDS = [(90, 26, 127, 55), (80, 76, 175, 80), (70, 192, 216, 74), (60, 240, 180, 41), (-1, 231, 229, 228)]
+# colour bands, same as the catalogue app: (lower bound, R, G, B, label)
+BANDS = [(90, 26, 127, 55, "90+ %"), (80, 76, 175, 80, "80-89 %"), (70, 192, 216, 74, "70-79 %"),
+         (60, 240, 180, 41, "60-69 %"), (-1, 231, 229, 228, "< 60 %")]
 
-meshes, colors, outlines, match, country, texture = [], [], [], [], [], []
+meshes, colors, legend, outlines, match, country, texture = [], [], [], [], [], [], []
 countries, country_area_km2, country_best = [], [], []
 recipe, report = None, ""
 
@@ -51,23 +56,42 @@ def three(c, s, a):
     return (c * 100.0 / tot, s * 100.0 / tot, a * 100.0 / tot)
 
 
-def band_color(m):
-    for lo, r, g, b in BANDS:
-        if m >= lo:
-            return Color.FromArgb(r, g, b)
+def band_of(m):
+    for i, b in enumerate(BANDS):
+        if m >= b[0]:
+            return i
 
 
-def load_soil_map(path):
-    """parsed GeoJSON, kept in memory until the file changes (it is ~6 MB)"""
-    key = "earth_soil_map"
-    stamp = (path, os.path.getmtime(path))
+def load_areas(path, k):
+    """[(properties, clay/silt/sand rescaled, [(mesh, polyline), ...])] for every soil area.
+    The geometry does not depend on the material, so it is built once and kept until the file or scale changes."""
+    key = "earth_soil_areas"
+    stamp = (path, os.path.getmtime(path), k)
     hit = sc.sticky.get(key)
     if hit and hit[0] == stamp:
         return hit[1]
     with open(path, "r") as f:
         data = json.load(f)
-    sc.sticky[key] = (stamp, data)
-    return data
+    areas = []
+    for f in data["features"]:
+        p = f["properties"]
+        site = three(p["clay"], p["silt"], p["sand"])
+        if site is None:
+            continue
+        parts = []
+        for ring in rings(f["geometry"]):
+            pl = rg.Polyline([rg.Point3d(x * k, y * k, 0) for x, y in ring])
+            if pl.Count < 4:
+                continue
+            if not pl.IsClosed:
+                pl.Add(pl[0])
+            mesh = rg.Mesh.CreateFromClosedPolyline(pl)
+            if mesh is not None:
+                parts.append((mesh, pl))
+        if parts:
+            areas.append((p, site, parts))
+    sc.sticky[key] = (stamp, areas)
+    return areas
 
 
 def rings(geom):
@@ -95,11 +119,8 @@ else:
     recipe_t = three(soil["clay_pct"], soil["silt_pct"], soil["sand_pct"])
     recipe = "clay %.0f / silt %.0f / sand %.0f %%" % recipe_t
     by_country = {}
-    for f in load_soil_map(str(soil_map))["features"]:
-        p = f["properties"]
-        site = three(p["clay"], p["silt"], p["sand"])
-        if site is None:
-            continue
+    per_band = [[] for b in BANDS]
+    for p, site, parts in load_areas(str(soil_map), k):
         mt = 100.0 - 0.5 * sum(abs(a - b) for a, b in zip(recipe_t, site))
         if mt >= min_m:
             c = by_country.setdefault(p["country"], [0.0, 0.0])
@@ -107,22 +128,22 @@ else:
             c[1] = max(c[1], mt)
         elif only_matching:
             continue
-        col = band_color(mt)
-        for ring in rings(f["geometry"]):
-            pl = rg.Polyline([rg.Point3d(x * k, y * k, 0) for x, y in ring])
-            if pl.Count < 4:
-                continue
-            if not pl.IsClosed:
-                pl.Add(pl[0])
-            mesh = rg.Mesh.CreateFromClosedPolyline(pl)
-            if mesh is None:
-                continue
-            meshes.append(mesh)
-            colors.append(col)
-            outlines.append(pl.ToPolylineCurve())
-            match.append(round(mt, 1))
-            country.append(p["country"])
-            texture.append(p["texture"])
+        per_band[band_of(mt)].extend(m for m, pl in parts)
+        match.append(round(mt, 1))
+        country.append(p["country"])
+        texture.append(p["texture"])
+        if show_outlines:
+            outlines.extend(pl.ToPolylineCurve() for m, pl in parts)
+    n_drawn = len(match)
+
+    # one joined mesh per band: a handful of objects for the preview instead of ~30,000
+    for b, parts in zip(BANDS, per_band):
+        if parts:
+            joined = rg.Mesh()
+            joined.Append(List[rg.Mesh](parts))
+            meshes.append(joined)
+            colors.append(Color.FromArgb(b[1], b[2], b[3]))
+            legend.append(b[4])
 
     ranked = sorted(by_country.items(), key=lambda kv: -kv[1][0])
     countries = [c for c, v in ranked]
@@ -134,5 +155,6 @@ else:
              "Buildable (match >= %.0f %%): %d countries, %.1f million km2" % (min_m, len(countries), total / 1e6)]
     lines += ["  %-28s %8.0fk km2   best %.0f %%" % (c, a / 1e3, b)
               for c, a, b in list(zip(countries, country_area_km2, country_best))[:10]]
-    lines.append("%d areas drawn. Texture only (DSMW topsoil): shortlist regions, then test the local soil." % len(meshes))
+    lines.append("%d areas drawn in %d colour bands. Texture only (DSMW topsoil): shortlist regions, then test the local soil."
+                 % (n_drawn, len(meshes)))
     report = "\n".join(lines)
